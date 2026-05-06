@@ -5,12 +5,19 @@ import SystemConfiguration
 
 // MARK: - CPU
 
+enum CPUCoreKind {
+    case efficiency
+    case performance
+    case unknown
+}
+
 struct CPUDetail {
     var total: Double
     var system: Double
     var user: Double
     var idle: Double
     var usagePerCore: [Double]
+    var coreKinds: [CPUCoreKind]
     var loadAvg1: Double
     var loadAvg5: Double
     var loadAvg15: Double
@@ -22,6 +29,7 @@ final class CPUReader {
     private struct Tick { var user, sys, idle, nice: Double }
     private var prev: [Tick] = []
     private var history: [Double] = []
+    private let coreKinds = CPUReader.readCoreKinds()
 
     func read() -> CPUDetail {
         var info: processor_info_array_t?
@@ -32,6 +40,7 @@ final class CPUReader {
                                   &cpuCount, &info, &infoCount) == KERN_SUCCESS,
               let info else {
             return CPUDetail(total: 0, system: 0, user: 0, idle: 1, usagePerCore: [],
+                             coreKinds: coreKinds,
                              loadAvg1: 0, loadAvg5: 0, loadAvg15: 0, uptime: uptimeString(), history: history)
         }
         defer {
@@ -94,6 +103,7 @@ final class CPUReader {
             user: min(1, max(0, userUsage)),
             idle: min(1, max(0, 1 - totalUsage)),
             usagePerCore: perCore,
+            coreKinds: coreKinds,
             loadAvg1: loadAvgRaw[0],
             loadAvg5: loadAvgRaw[1],
             loadAvg15: loadAvgRaw[2],
@@ -112,6 +122,60 @@ final class CPUReader {
         form.unitsStyle = .full
         form.allowedUnits = [.day, .hour, .minute]
         return form.string(from: bootDate, to: Date()) ?? "Unknown"
+    }
+
+    private static func readCoreKinds() -> [CPUCoreKind] {
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("AppleARMPE"), &iterator) == KERN_SUCCESS else {
+            return []
+        }
+        defer { IOObjectRelease(iterator) }
+
+        var cores: [(id: Int32, kind: CPUCoreKind)] = []
+        while true {
+            let service = IOIteratorNext(iterator)
+            guard service != 0 else { break }
+            defer { IOObjectRelease(service) }
+
+            var childIterator: io_iterator_t = 0
+            guard IORegistryEntryGetChildIterator(service, kIOServicePlane, &childIterator) == KERN_SUCCESS else { continue }
+            defer { IOObjectRelease(childIterator) }
+
+            while true {
+                let child = IOIteratorNext(childIterator)
+                guard child != 0 else { break }
+                defer { IOObjectRelease(child) }
+
+                var nameBuffer = [CChar](repeating: 0, count: 128)
+                guard IORegistryEntryGetName(child, &nameBuffer) == KERN_SUCCESS else { continue }
+                let name = String(cString: nameBuffer)
+                guard name.range(of: #"^cpu\d+"#, options: .regularExpression) != nil else { continue }
+
+                var unmanagedProperties: Unmanaged<CFMutableDictionary>?
+                guard IORegistryEntryCreateCFProperties(child, &unmanagedProperties, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+                      let properties = unmanagedProperties?.takeRetainedValue() as? [String: Any] else { continue }
+
+                let id = (properties["cpu-id"] as? Data)?.withUnsafeBytes { $0.load(as: Int32.self) } ?? Int32(cores.count)
+                let rawType = (properties["cluster-type"] as? Data).flatMap { String(data: $0, encoding: .utf8) }?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let kind: CPUCoreKind
+                switch rawType {
+                case "E": kind = .efficiency
+                case "P", "M": kind = .performance
+                default: kind = .unknown
+                }
+                cores.append((id: id, kind: kind))
+            }
+        }
+
+        let maxID = cores.map(\.id).max() ?? -1
+        guard maxID >= 0 else { return [] }
+
+        var kinds = Array(repeating: CPUCoreKind.unknown, count: Int(maxID) + 1)
+        for core in cores where core.id >= 0 {
+            kinds[Int(core.id)] = core.kind
+        }
+        return kinds
     }
 }
 

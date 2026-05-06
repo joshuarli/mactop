@@ -2,7 +2,7 @@ import AppKit
 
 // MARK: - Constants (matching Stats exactly)
 
-private let popupWidth: CGFloat    = 264
+private let popupWidth: CGFloat    = 320
 private let sepHeight: CGFloat     = 30
 private let rowHeight: CGFloat     = 22
 private let margins: CGFloat       = 8
@@ -105,20 +105,12 @@ private final class ProcessesView: NSView {
     private var nameLabels:  [LabelField]  = []
     private var valueLabels: [ValueField]  = []
 
-    init(frame: NSRect, count: Int, valueHeader: String) {
+    init(frame: NSRect, count: Int, valueHeader _: String) {
         self.processCount = count
         super.init(frame: frame)
         let w = frame.width
-        let nameW = w * 0.65
-
-        // Header row sits above the process rows
-        let hRow = NSView(frame: NSRect(x: 0, y: CGFloat(count) * rowHeight, width: w, height: rowHeight))
-        let hName = LabelField("Process", frame: NSRect(x: 20, y: (rowHeight - 16)/2, width: nameW - 20, height: 16))
-        let hVal  = ValueField(valueHeader, frame: NSRect(x: nameW, y: (rowHeight - 16)/2, width: w - nameW - margins, height: 16))
-        hVal.font = NSFont.systemFont(ofSize: 12, weight: .regular)
-        hVal.textColor = .secondaryLabelColor
-        hRow.addSubview(hName); hRow.addSubview(hVal)
-        addSubview(hRow)
+        let valueW: CGFloat = 72
+        let nameW = w - valueW - margins
 
         for i in 0..<count {
             let y = CGFloat(count - 1 - i) * rowHeight
@@ -130,7 +122,7 @@ private final class ProcessesView: NSView {
             let nameLabel = LabelField("", frame: NSRect(x: 20, y: (rowHeight - 16)/2, width: nameW - 20, height: 16))
             nameLabel.cell?.lineBreakMode = .byTruncatingTail
 
-            let valueLabel = ValueField("", frame: NSRect(x: nameW, y: (rowHeight - 16)/2, width: w - nameW - margins, height: 16))
+            let valueLabel = ValueField("", frame: NSRect(x: nameW, y: (rowHeight - 16)/2, width: valueW, height: 16))
 
             row.addSubview(iconView); row.addSubview(nameLabel); row.addSubview(valueLabel)
             addSubview(row)
@@ -186,20 +178,60 @@ private func speedTuple(_ bytes: Double) -> (String, String) {
 
 // MARK: - PopupPanel
 
+private final class PopupChromeView: NSView {
+    private let foreground: NSVisualEffectView
+    private let background: NSView
+
+    init(content: NSView) {
+        let size = NSSize(
+            width: content.frame.width + margins*2,
+            height: content.frame.height + margins*2
+        )
+        foreground = NSVisualEffectView(frame: NSRect(origin: .zero, size: size))
+        background = NSView(frame: foreground.bounds)
+        super.init(frame: NSRect(origin: .zero, size: size))
+
+        wantsLayer = true
+        layer?.masksToBounds = true
+        layer?.cornerRadius = 6
+
+        foreground.material = .titlebar
+        foreground.blendingMode = .behindWindow
+        foreground.state = .active
+        foreground.wantsLayer = true
+        foreground.layer?.cornerRadius = 6
+        foreground.layer?.masksToBounds = true
+
+        background.wantsLayer = true
+        foreground.addSubview(background)
+
+        content.setFrameOrigin(NSPoint(x: margins, y: margins))
+        addSubview(foreground, positioned: .below, relativeTo: nil)
+        addSubview(content)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func updateLayer() {
+        background.layer?.backgroundColor = isDarkMode ? .clear : NSColor.white.cgColor
+    }
+}
+
 final class PopupPanel: NSPanel {
-    init(contentView: NSView) {
+    init(contentView content: NSView) {
+        let chrome = PopupChromeView(content: content)
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: popupWidth, height: contentView.frame.height),
+            contentRect: NSRect(x: 0, y: 0, width: chrome.frame.width, height: chrome.frame.height),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
         isFloatingPanel = true
         level = .statusBar
-        backgroundColor = NSColor.windowBackgroundColor
-        isOpaque = true
+        backgroundColor = .clear
+        isOpaque = false
         hasShadow = true
-        self.contentView = contentView
+        self.contentView = chrome
     }
     override var canBecomeKey: Bool { true }
 }
@@ -222,9 +254,6 @@ final class CPUPopupView: NSStackView {
     private var userField: ValueField!
     private var idleField: ValueField!
     private var uptimeField: ValueField!
-    private var avg1Field: ValueField!
-    private var avg5Field: ValueField!
-    private var avg15Field: ValueField!
 
     private var processesView: ProcessesView!
     private let processCount = 8
@@ -236,7 +265,6 @@ final class CPUPopupView: NSStackView {
         addArrangedSubview(initDashboard())
         addArrangedSubview(initChart())
         addArrangedSubview(initDetails())
-        addArrangedSubview(initAverage())
         addArrangedSubview(initProcesses())
         recalcHeight()
     }
@@ -279,7 +307,7 @@ final class CPUPopupView: NSStackView {
         lineBox.wantsLayer = true
         lineBox.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
         lineBox.layer?.cornerRadius = 3
-        lineChart = LineChartView(frame: NSRect(x: 1, y: 0, width: popupWidth - 2, height: chartContentH), num: 180)
+        lineChart = LineChartView(frame: NSRect(x: 1, y: 0, width: popupWidth - 2, height: chartContentH), num: 180, fixedMax: 1)
         lineBox.addSubview(lineChart)
         view.addArrangedSubview(lineBox)
 
@@ -319,27 +347,8 @@ final class CPUPopupView: NSStackView {
         return view
     }
 
-    private func initAverage() -> NSView {
-        let h = (rowHeight * 3) + sepHeight
-        let view = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: h))
-        view.heightAnchor.constraint(equalToConstant: h).isActive = true
-
-        let sep = separatorView("Average load")
-        sep.frame = NSRect(x: 0, y: h - sepHeight, width: popupWidth, height: sepHeight)
-        view.addSubview(sep)
-
-        let container = NSStackView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: sep.frame.origin.y))
-        container.orientation = .vertical; container.spacing = 0
-        view.addSubview(container)
-
-        avg1Field  = popupRow(container, title: "1 minute:",  value: "").1
-        avg5Field  = popupRow(container, title: "5 minutes:", value: "").1
-        avg15Field = popupRow(container, title: "15 minutes:", value: "").1
-        return view
-    }
-
     private func initProcesses() -> NSView {
-        let procViewH = CGFloat(processCount + 1) * rowHeight
+        let procViewH = CGFloat(processCount) * rowHeight
         let totalH = sepHeight + procViewH
         let view = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: totalH))
         view.heightAnchor.constraint(equalToConstant: totalH).isActive = true
@@ -362,9 +371,6 @@ final class CPUPopupView: NSStackView {
         userField.stringValue   = "\(Int((d.user   * 100).rounded()))%"
         idleField.stringValue   = "\(Int((d.idle   * 100).rounded()))%"
         uptimeField.stringValue = d.uptime
-        avg1Field.stringValue   = String(format: "%.2f", d.loadAvg1)
-        avg5Field.stringValue   = String(format: "%.2f", d.loadAvg5)
-        avg15Field.stringValue  = String(format: "%.2f", d.loadAvg15)
 
         circle.setSegments([
             ColorValue(d.system, color: systemColor),
@@ -376,7 +382,19 @@ final class CPUPopupView: NSStackView {
         lineChart.addValue(d.total)
 
         if !d.usagePerCore.isEmpty {
-            let vals = d.usagePerCore.map { ColorValue($0, color: .controlAccentColor) }
+            let vals = d.usagePerCore.enumerated().map { idx, value in
+                let color: NSColor
+                if d.coreKinds.indices.contains(idx) {
+                    switch d.coreKinds[idx] {
+                    case .efficiency: color = .systemTeal
+                    case .performance: color = .systemIndigo
+                    case .unknown: color = .controlAccentColor
+                    }
+                } else {
+                    color = .controlAccentColor
+                }
+                return ColorValue(value, color: color)
+            }
             columnChart.setValues(vals)
         }
 
@@ -468,7 +486,7 @@ final class RAMPopupView: NSStackView {
         container.wantsLayer = true
         container.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
         container.layer?.cornerRadius = 3
-        lineChart = LineChartView(frame: NSRect(x: 1, y: 0, width: popupWidth - 2, height: chartH), num: 180)
+        lineChart = LineChartView(frame: NSRect(x: 1, y: 0, width: popupWidth - 2, height: chartH), num: 180, fixedMax: 1)
         container.addSubview(lineChart)
         view.addSubview(container)
         return view
@@ -497,7 +515,7 @@ final class RAMPopupView: NSStackView {
     }
 
     private func initProcesses() -> NSView {
-        let procViewH = CGFloat(processCount + 1) * rowHeight
+        let procViewH = CGFloat(processCount) * rowHeight
         let totalH = sepHeight + procViewH
         let view = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: totalH))
         view.heightAnchor.constraint(equalToConstant: totalH).isActive = true
@@ -596,16 +614,33 @@ final class GPUPopupView: NSStackView {
     }
 
     private func initStats() -> NSView {
-        let view = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: 0))
+        let labelH: CGFloat = 18
+        let circleRowH = circleSize + 20
+        let chartRowH = chartSize + 20
+        let totalH = labelH + circleRowH + chartRowH
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: totalH))
+        view.heightAnchor.constraint(equalToConstant: totalH).isActive = true
 
-        circleRow = NSStackView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: 0))
+        let labelRow = NSStackView(frame: NSRect(x: 0, y: chartRowH + circleRowH, width: popupWidth, height: labelH))
+        labelRow.orientation = .horizontal
+        labelRow.distribution = .fillEqually
+        labelRow.edgeInsets = NSEdgeInsets(top: 0, left: 10, bottom: 0, right: 10)
+
+        circleRow = NSStackView(frame: NSRect(x: 0, y: chartRowH, width: popupWidth, height: circleRowH))
         circleRow.orientation = .horizontal
         circleRow.distribution = .fillEqually
         circleRow.alignment = .bottom
+        circleRow.edgeInsets = NSEdgeInsets(top: 4, left: 10, bottom: 0, right: 10)
 
-        chartRow = NSStackView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: 0))
+        chartRow = NSStackView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: chartRowH))
         chartRow.orientation = .horizontal
         chartRow.distribution = .fillEqually
+        chartRow.spacing = margins
+        chartRow.edgeInsets = NSEdgeInsets(top: margins, left: margins, bottom: margins, right: margins)
+
+        addGPUColumnLabel("GPU")
+        addGPUColumnLabel("Render")
+        addGPUColumnLabel("Tiler")
 
         addCircle(id: "GPU utilization")
         addCircle(id: "Render utilization")
@@ -614,23 +649,26 @@ final class GPUPopupView: NSStackView {
         addChart(id: "Render utilization")
         addChart(id: "Tiler utilization")
 
-        let totalH = circleRow.bounds.height + chartRow.bounds.height
-        view.setFrameSize(NSSize(width: popupWidth, height: totalH))
-        view.heightAnchor.constraint(equalToConstant: totalH).isActive = true
-
-        circleRow.frame = NSRect(x: 0, y: chartRow.bounds.height, width: popupWidth, height: circleRow.bounds.height)
-        chartRow.frame  = NSRect(x: 0, y: 0, width: popupWidth, height: chartRow.bounds.height)
+        view.addSubview(labelRow)
         view.addSubview(circleRow)
         view.addSubview(chartRow)
         return view
+
+        func addGPUColumnLabel(_ text: String) {
+            let label = NSTextField(labelWithString: text)
+            label.alignment = .center
+            label.textColor = .secondaryLabelColor
+            label.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+            label.isEditable = false
+            label.isBordered = false
+            label.drawsBackground = false
+            labelRow.addArrangedSubview(label)
+        }
     }
 
     private func addCircle(id: String) {
         let c = PieChartView(frame: NSRect(x: 0, y: 0, width: circleSize, height: circleSize), openCircle: true)
         c.id = id
-        circleRow.setFrameSize(NSSize(width: popupWidth, height: circleSize + 20))
-        circleRow.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 0, right: 10)
-        circleRow.heightAnchor.constraint(equalToConstant: circleRow.bounds.height).isActive = true
         circleRow.addArrangedSubview(c)
         switch id {
         case "GPU utilization":    gpuCircle    = c
@@ -641,15 +679,11 @@ final class GPUPopupView: NSStackView {
     }
 
     private func addChart(id: String) {
-        let c = LineChartView(frame: NSRect(x: 0, y: 0, width: 100, height: chartSize), num: 120)
+        let c = LineChartView(frame: NSRect(x: 0, y: 0, width: 100, height: chartSize), num: 120, fixedMax: 1)
         c.id = id
         c.wantsLayer = true
         c.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
         c.layer?.cornerRadius = 3
-        chartRow.setFrameSize(NSSize(width: popupWidth, height: chartSize + 20))
-        chartRow.spacing = margins
-        chartRow.edgeInsets = NSEdgeInsets(top: margins, left: margins, bottom: margins, right: margins)
-        chartRow.heightAnchor.constraint(equalToConstant: chartRow.bounds.height).isActive = true
         chartRow.addArrangedSubview(c)
         switch id {
         case "GPU utilization":    gpuChart    = c
@@ -678,7 +712,7 @@ final class GPUPopupView: NSStackView {
 
 // MARK: - Net Popup
 // Matches Stats Net popup: dashboard (large up/down values) + usage history +
-// connectivity chart + details + interface + address
+// details + interface + address
 
 final class NetPopupView: NSStackView {
 
@@ -696,20 +730,14 @@ final class NetPopupView: NSStackView {
     private var downloadContainerView: NSView!
 
     private var usageChart: NetworkChartView!
-    private var connectivityChart: GridChartView!
 
     private var totalUpField:   ValueField!
     private var totalDownField: ValueField!
     private var statusField:    ValueField!
 
     // Interface section
-    private var ifaceStack: NSStackView!
     private var interfaceField:       ValueField!
     private var ifaceStatusField:     ValueField!
-    private var macField:             ValueField!
-    private var ssidRow:              NSView?
-    private var ssidField:            ValueField?
-    private var speedField:           ValueField!
 
     // Address section
     private var localIPField:  ValueField!
@@ -724,7 +752,6 @@ final class NetPopupView: NSStackView {
 
         addArrangedSubview(initDashboard())
         addArrangedSubview(initChart())
-        addArrangedSubview(initConnectivityChart())
         addArrangedSubview(initDetails())
         addArrangedSubview(initInterface())
         addArrangedSubview(initAddress())
@@ -835,32 +862,12 @@ final class NetPopupView: NSStackView {
         return view
     }
 
-    private func initConnectivityChart() -> NSView {
-        let gridH: CGFloat  = 30
-        let totalH = gridH + sepHeight
-        let view = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: totalH))
-        view.heightAnchor.constraint(equalToConstant: totalH).isActive = true
-
-        let sep = separatorView("Connectivity history")
-        sep.frame = NSRect(x: 0, y: gridH, width: popupWidth, height: sepHeight)
-        view.addSubview(sep)
-
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: gridH))
-        container.wantsLayer = true
-        container.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
-        container.layer?.cornerRadius = 3
-        connectivityChart = GridChartView(
-            frame: NSRect(x: 0, y: 1, width: popupWidth, height: gridH - 2),
-            grid: (30, 3)
-        )
-        container.addSubview(connectivityChart)
-        view.addSubview(container)
-        return view
-    }
-
     private func initDetails() -> NSView {
-        let view = NSStackView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: 0))
+        let rowCount: CGFloat = 3
+        let h = sepHeight + rowCount * rowHeight
+        let view = NSStackView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: h))
         view.orientation = .vertical; view.spacing = 0
+        view.heightAnchor.constraint(equalToConstant: h).isActive = true
 
         let sepRow = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: sepHeight))
         sepRow.heightAnchor.constraint(equalToConstant: sepHeight).isActive = true
@@ -877,12 +884,11 @@ final class NetPopupView: NSStackView {
     }
 
     private func initInterface() -> NSView {
-        let rowCount: CGFloat = 5
+        let rowCount: CGFloat = 2
         let h = sepHeight + rowCount * rowHeight
         let view = NSStackView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: h))
         view.orientation = .vertical; view.spacing = 0
         view.heightAnchor.constraint(equalToConstant: h).isActive = true
-        ifaceStack = view
 
         let sepRow = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: sepHeight))
         sepRow.heightAnchor.constraint(equalToConstant: sepHeight).isActive = true
@@ -891,11 +897,6 @@ final class NetPopupView: NSStackView {
 
         interfaceField   = popupRow(view, title: "Interface:",        value: "Unknown").1
         ifaceStatusField = popupRow(view, title: "Status:",           value: "Unknown").1
-        macField         = popupRow(view, title: "Physical address:", value: "Unknown").1
-        let ssidResult   = popupRow(view, title: "Network:",          value: "—")
-        ssidField        = ssidResult.1
-        ssidRow          = ssidResult.2
-        speedField       = popupRow(view, title: "Speed:",            value: "Unknown").1
         return view
     }
 
@@ -917,7 +918,7 @@ final class NetPopupView: NSStackView {
     }
 
     private func initProcesses() -> NSView {
-        let procViewH = CGFloat(processCount + 1) * rowHeight
+        let procViewH = CGFloat(processCount) * rowHeight
         let totalH = sepHeight + procViewH
         let view = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: totalH))
         view.heightAnchor.constraint(equalToConstant: totalH).isActive = true
@@ -979,16 +980,10 @@ final class NetPopupView: NSStackView {
         let dispName  = d.displayName.isEmpty   ? ifaceName : d.displayName
         interfaceField.stringValue   = "\(dispName) (\(ifaceName))"
         ifaceStatusField.stringValue = d.isUp ? "Active" : "Inactive"
-        macField.stringValue         = d.macAddress.isEmpty ? "Unknown" : d.macAddress
-        ssidField?.stringValue       = d.ssid ?? "—"
-        speedField.stringValue       = d.transmitRate > 0
-            ? "\(Int(d.transmitRate)) Mbps"
-            : "Unknown"
 
         localIPField.stringValue  = d.localIP.isEmpty    ? "Unknown" : d.localIP
         publicIPField.stringValue = d.publicIP ?? "Fetching…"
 
         usageChart.addValue(upload: d.upload, download: d.download)
-        connectivityChart.addValue(d.isUp)
     }
 }

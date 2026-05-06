@@ -168,10 +168,13 @@ final class LineChartView: NSView {
     private var points: [DoubleValue?]
     private var color: NSColor
     private var cursor: NSPoint? = nil
+    private var flipY = false
+    private var fixedMax: Double?
 
-    init(frame: NSRect = .zero, num: Int, color: NSColor = .controlAccentColor) {
+    init(frame: NSRect = .zero, num: Int, color: NSColor = .controlAccentColor, fixedMax: Double? = nil) {
         self.points = Array(repeating: nil, count: max(num, 1))
         self.color = color
+        self.fixedMax = fixedMax
         super.init(frame: frame)
 
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.activeAlways, .mouseEnteredAndExited, .mouseMoved, .inVisibleRect], owner: self, userInfo: nil))
@@ -188,7 +191,7 @@ final class LineChartView: NSView {
         let height = frame.height - offset
         let width = frame.width
         let xRatio = width / CGFloat(points.count - 1)
-        let maxValue = points.compactMap({ $0 }).map({ $0.value }).max() ?? 1
+        let maxValue = fixedMax ?? points.compactMap({ $0 }).map({ $0.value }).max() ?? 1
 
         let lineColor = color
         let gradientColor = color.withAlphaComponent(0.5)
@@ -204,7 +207,8 @@ final class LineChartView: NSView {
                 if !line.isEmpty { allLines.append(line); line = [] }
                 continue
             }
-            let y = maxValue > 0 ? CGFloat(v.value / maxValue) * height : 0
+            let normalizedY = maxValue > 0 ? CGFloat(v.value / maxValue) * height : 0
+            let y = flipY ? height - normalizedY : normalizedY
             let pt = CGPoint(x: CGFloat(i) * xRatio, y: y)
             line.append(pt)
             list.append((value: v, point: pt))
@@ -221,8 +225,9 @@ final class LineChartView: NSView {
             path.stroke()
 
             let fillPath = path.copy() as! NSBezierPath
-            fillPath.line(to: CGPoint(x: linePoints.last!.x, y: 0))
-            fillPath.line(to: CGPoint(x: linePoints[0].x, y: 0))
+            let baseline = flipY ? height : 0
+            fillPath.line(to: CGPoint(x: linePoints.last!.x, y: baseline))
+            fillPath.line(to: CGPoint(x: linePoints[0].x, y: baseline))
             fillPath.close()
             gradient?.draw(in: fillPath, angle: 90)
         }
@@ -269,6 +274,7 @@ final class LineChartView: NSView {
     }
 
     func setColor(_ c: NSColor) { color = c; needsDisplay = true }
+    func setFlipY(_ v: Bool) { flipY = v; needsDisplay = true }
 
     func reinit(_ num: Int = 60) {
         guard points.count != num else { return }
@@ -374,6 +380,7 @@ final class NetworkChartView: NSView {
         // upload = out = top, download = in = bottom; download flipped (grows downward)
         outChart = LineChartView(frame: topFrame, num: num, color: outColor)
         inChart  = LineChartView(frame: bottomFrame, num: num, color: inColor)
+        inChart.setFlipY(true)
         super.init(frame: frame)
         addSubview(outChart)
         addSubview(inChart)
