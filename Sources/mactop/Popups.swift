@@ -242,12 +242,26 @@ private final class PopupChromeView: NSView {
         content.setFrameOrigin(NSPoint(x: margins, y: margins))
         addSubview(foreground, positioned: .below, relativeTo: nil)
         addSubview(content)
+        addSubview(Self.makeQuitButton(panelHeight: size.height))
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
     override func updateLayer() {
         background.layer?.backgroundColor = isDarkMode ? .clear : NSColor.white.cgColor
+    }
+
+    private static func makeQuitButton(panelHeight: CGFloat) -> NSButton {
+        let button = NSButton(frame: NSRect(x: 6, y: panelHeight - 22, width: 16, height: 16))
+        button.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "Quit")
+        button.imageScaling = .scaleProportionallyDown
+        button.isBordered = false
+        button.bezelStyle = .regularSquare
+        button.target = NSApp
+        button.action = #selector(NSApplication.terminate(_:))
+        button.toolTip = "Quit mactop"
+        button.autoresizingMask = [.minYMargin, .maxXMargin]
+        return button
     }
 }
 

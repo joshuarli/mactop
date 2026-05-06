@@ -2,11 +2,15 @@ import AppKit
 
 @main
 struct Mactop {
+    private static var delegate: AppDelegate?
+
     static func main() {
-        NSApplication.shared.setActivationPolicy(.accessory)
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
         let delegate = AppDelegate()
-        NSApplication.shared.delegate = delegate
-        NSApplication.shared.run()
+        Self.delegate = delegate
+        app.delegate = delegate
+        app.run()
     }
 }
 

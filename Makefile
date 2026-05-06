@@ -3,7 +3,6 @@ BIN        = mactop
 LABEL      = com.mactop
 AGENT_DIR  = $(HOME)/Library/LaunchAgents
 PLIST      = $(AGENT_DIR)/$(LABEL).plist
-ENTITLEMENTS = mactop.entitlements
 
 .PHONY: build install uninstall clean
 
@@ -15,11 +14,11 @@ build:
 	codesign -fs - .build/debug/$(BIN)
 	xattr -d com.apple.quarantine $(PWD)/.build/debug/$(BIN) 2>/dev/null || true
 
-install: $(ENTITLEMENTS)
+install:
 	swift build -c release
 	install -d $(PREFIX)/bin
 	install -m 755 .build/release/$(BIN) $(PREFIX)/bin/$(BIN)
-	codesign -fs - --entitlements $(ENTITLEMENTS) $(PREFIX)/bin/$(BIN)
+	codesign -fs - $(PREFIX)/bin/$(BIN)
 	xattr -d com.apple.quarantine $(PREFIX)/bin/$(BIN) 2>/dev/null || true
 	install -d $(AGENT_DIR)
 	printf '%s\n' \
@@ -36,12 +35,11 @@ install: $(ENTITLEMENTS)
 	  '  </array>' \
 	  '  <key>RunAtLoad</key>' \
 	  '  <true/>' \
-	  '  <key>KeepAlive</key>' \
-	  '  <true/>' \
 	  '</dict>' \
 	  '</plist>' > $(PLIST)
 	launchctl bootout gui/$$(id -u) $(PLIST) 2>/dev/null || true
 	launchctl bootstrap gui/$$(id -u) $(PLIST)
+	launchctl kickstart -k gui/$$(id -u)/$(LABEL)
 
 uninstall:
 	launchctl bootout gui/$$(id -u) $(PLIST) 2>/dev/null || true
