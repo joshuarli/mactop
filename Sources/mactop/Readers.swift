@@ -443,6 +443,8 @@ final class NetReader {
     private var lastTime = Date()
     private var history = PairHistory(capacity: 180)
     private let dynamicStore = SCDynamicStoreCreate(nil, "mactop" as CFString, nil, nil)
+    private var primaryInterfaceLastRead = Date.distantPast
+    private var cachedPrimaryInterface: String? = nil
 
     // Interface detail cache — refreshed at most every 15 s
     private var detailsLastRead = Date.distantPast
@@ -496,7 +498,7 @@ final class NetReader {
                     let nlen = Int(sdl.pointee.sdl_nlen)
                     if alen == 6 {
                         mac = withUnsafeBytes(of: sdl.pointee.sdl_data) { raw in
-                            (0..<6).map { String(format: "%02x", raw[nlen + $0]) }.joined(separator: ":")
+                            Self.macString(bytes: raw, offset: nlen)
                         }
                     }
                 }
@@ -583,10 +585,17 @@ final class NetReader {
     }
 
     private func primaryInterfaceName() -> String? {
+        let now = Date()
+        guard now.timeIntervalSince(primaryInterfaceLastRead) >= 15 else {
+            return cachedPrimaryInterface
+        }
+        primaryInterfaceLastRead = now
+
         guard let dynamicStore,
               let global = SCDynamicStoreCopyValue(dynamicStore, "State:/Network/Global/IPv4" as CFString) as? [String: Any],
               let iface = global["PrimaryInterface"] as? String,
               !iface.isEmpty else { return nil }
+        cachedPrimaryInterface = iface
         return iface
     }
 
@@ -635,4 +644,18 @@ final class NetReader {
     }
 
     private static let publicIPURL = URL(string: "https://api.ipify.org")
+
+    private static func macString(bytes: UnsafeRawBufferPointer, offset: Int) -> String {
+        guard offset + 5 < bytes.count else { return "" }
+        let digits = Array("0123456789abcdef".utf8)
+        var output = [UInt8]()
+        output.reserveCapacity(17)
+        for i in 0..<6 {
+            let byte = bytes[offset + i]
+            if i > 0 { output.append(58) }
+            output.append(digits[Int(byte >> 4)])
+            output.append(digits[Int(byte & 0x0f)])
+        }
+        return String(decoding: output, as: UTF8.self)
+    }
 }

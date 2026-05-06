@@ -367,7 +367,7 @@ final class NetProcessReader {
         }
     }
 
-    private let nativeReader = NativeReader()
+    private lazy var nativeReader = NativeReader()
     private var prev:     [Int32: (name: String, in: UInt64, out: UInt64)] = [:]
     private var prevTime: Date = .distantPast
 

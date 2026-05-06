@@ -6,16 +6,35 @@ import AppKit
 
 final class MiniView: NSView {
     let label: String
+    private let labelString: NSAttributedString
+    private var valueString: NSAttributedString
+    private var displayedPercent = 0
+
     var value: Double = 0 {
         didSet {
-            if Int((value * 100).rounded()) != Int((oldValue * 100).rounded()) {
+            let percent = Int((value * 100).rounded())
+            if percent != displayedPercent {
+                displayedPercent = percent
+                valueString = NSAttributedString(string: "\(percent)%", attributes: Self.valueAttrs)
                 needsDisplay = true
             }
         }
     }
 
+    private static let labelAttrs: [NSAttributedString.Key: Any] = [
+        .font: NSFont.systemFont(ofSize: 7, weight: .light),
+        .foregroundColor: NSColor.labelColor,
+    ]
+
+    private static let valueAttrs: [NSAttributedString.Key: Any] = [
+        .font: NSFont.systemFont(ofSize: 12, weight: .regular),
+        .foregroundColor: NSColor.labelColor,
+    ]
+
     init(label: String) {
         self.label = label
+        self.labelString = NSAttributedString(string: label, attributes: Self.labelAttrs)
+        self.valueString = NSAttributedString(string: "0%", attributes: Self.valueAttrs)
         super.init(frame: .zero)
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -24,21 +43,10 @@ final class MiniView: NSView {
         let w = bounds.width
 
         // Label: 7pt light, y=12 from bottom (same coordinates as Stats)
-        let labelAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 7, weight: .light),
-            .foregroundColor: NSColor.labelColor,
-        ]
-        NSAttributedString(string: label, attributes: labelAttrs)
-            .draw(with: CGRect(x: 0, y: 12, width: w, height: 7))
+        labelString.draw(with: CGRect(x: 0, y: 12, width: w, height: 7))
 
         // Value: 12pt regular, y=1 from bottom
-        let valueAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 12, weight: .regular),
-            .foregroundColor: NSColor.labelColor,
-        ]
-        let pct = Int((value * 100).rounded())
-        NSAttributedString(string: "\(pct)%", attributes: valueAttrs)
-            .draw(with: CGRect(x: 0, y: 1, width: w, height: 13))
+        valueString.draw(with: CGRect(x: 0, y: 1, width: w, height: 13))
     }
 }
 
@@ -48,8 +56,33 @@ final class MiniView: NSView {
 // Dots are colored when traffic ≥ 1024 B/s, labelColor otherwise.
 
 final class SpeedView: NSView {
-    var upload: Int64 = 0   { didSet { if upload != oldValue { needsDisplay = true } } }
-    var download: Int64 = 0 { didSet { if download != oldValue { needsDisplay = true } } }
+    private var uploadText = "0 KB/s"
+    private var downloadText = "0 KB/s"
+
+    var upload: Int64 = 0 {
+        didSet {
+            guard upload != oldValue else { return }
+            uploadText = Self.fmtSpeed(upload)
+            needsDisplay = true
+        }
+    }
+    var download: Int64 = 0 {
+        didSet {
+            guard download != oldValue else { return }
+            downloadText = Self.fmtSpeed(download)
+            needsDisplay = true
+        }
+    }
+
+    private static let textAttrs: [NSAttributedString.Key: Any] = {
+        let style = NSMutableParagraphStyle()
+        style.alignment = .right
+        return [
+            .font: NSFont.systemFont(ofSize: 9, weight: .light),
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: style,
+        ]
+    }()
 
     override init(frame: NSRect) { super.init(frame: frame) }
     required init?(coder: NSCoder) { fatalError() }
@@ -71,26 +104,19 @@ final class SpeedView: NSView {
         NSBezierPath(ovalIn: CGRect(x: 0, y: dotY - 0.2, width: dotSize, height: dotSize)).fill()
 
         // Values: 9pt light, right-aligned, starting at x=7 (after dots)
-        let style = NSMutableParagraphStyle()
-        style.alignment = .right
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 9, weight: .light),
-            .foregroundColor: NSColor.labelColor,
-            .paragraphStyle: style,
-        ]
         let textX: CGFloat = 7
         let textW = bounds.width - textX
 
         // Upload top row: y = rowH + 1
-        NSAttributedString(string: fmtSpeed(upload), attributes: attrs)
+        NSAttributedString(string: uploadText, attributes: Self.textAttrs)
             .draw(with: CGRect(x: textX, y: rowH + 1, width: textW, height: rowH))
 
         // Download bottom row: y = 1
-        NSAttributedString(string: fmtSpeed(download), attributes: attrs)
+        NSAttributedString(string: downloadText, attributes: Self.textAttrs)
             .draw(with: CGRect(x: textX, y: 1, width: textW, height: rowH))
     }
 
-    private func fmtSpeed(_ bytes: Int64) -> String {
+    private static func fmtSpeed(_ bytes: Int64) -> String {
         let b = Double(bytes)
         switch b {
         case ..<1_000:           return "0 KB/s"

@@ -132,10 +132,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         cpuProcessQueue.async { [weak self] in
             _ = self?.cpuProcessReader.read()
         }
-        netProcessQueue.async { [weak self] in
-            _ = self?.netProcessReader.read()
-        }
-
         let detailTimer = DispatchSource.makeTimerSource(queue: .main)
         detailTimer.schedule(deadline: .now() + .seconds(3), repeating: .seconds(3), leeway: .milliseconds(250))
         detailTimer.setEventHandler { [weak self] in
