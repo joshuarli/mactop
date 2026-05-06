@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import IOKit
+import SystemConfiguration
 
 // MARK: - CPU
 
@@ -209,6 +210,11 @@ struct GPUDetail {
 
 final class GPUReader {
     private var history: [Double] = []
+    // EMA smoothing matches Stats' visually calm GPU graph
+    private var emaTotal:  Double = 0
+    private var emaRender: Double = 0
+    private var emaTiler:  Double = 0
+    private let alpha = 0.3
 
     // Read once — brand string never changes at runtime
     private static let modelName: String = {
@@ -225,7 +231,7 @@ final class GPUReader {
             kIOMainPortDefault,
             IOServiceMatching("IOAccelerator"),
             &iterator
-        ) == KERN_SUCCESS else { return GPUDetail(total: 0, render: 0, tiler: 0, model: Self.modelName, history: history) }
+        ) == KERN_SUCCESS else { return GPUDetail(total: emaTotal, render: emaRender, tiler: emaTiler, model: Self.modelName, history: history) }
         defer { IOObjectRelease(iterator) }
 
         while true {
@@ -242,16 +248,20 @@ final class GPUReader {
             let pct = perf["Device Utilization %"] as? Double
                    ?? perf["GPU Activity(%)"] as? Double
                    ?? 0
-            let render = (perf["Renderer Utilization %"] as? Double ?? 0) / 100.0
-            let tiler  = (perf["Tiler Utilization %"]   as? Double ?? 0) / 100.0
-            let total  = pct / 100.0
+            let rawTotal  = pct / 100.0
+            let rawRender = (perf["Renderer Utilization %"] as? Double ?? 0) / 100.0
+            let rawTiler  = (perf["Tiler Utilization %"]   as? Double ?? 0) / 100.0
 
-            history.append(total)
+            emaTotal  = alpha * rawTotal  + (1 - alpha) * emaTotal
+            emaRender = alpha * rawRender + (1 - alpha) * emaRender
+            emaTiler  = alpha * rawTiler  + (1 - alpha) * emaTiler
+
+            history.append(emaTotal)
             if history.count > 180 { history.removeFirst() }
 
-            return GPUDetail(total: total, render: render, tiler: tiler, model: Self.modelName, history: history)
+            return GPUDetail(total: emaTotal, render: emaRender, tiler: emaTiler, model: Self.modelName, history: history)
         }
-        return GPUDetail(total: 0, render: 0, tiler: 0, model: Self.modelName, history: history)
+        return GPUDetail(total: emaTotal, render: emaRender, tiler: emaTiler, model: Self.modelName, history: history)
     }
 }
 
@@ -262,8 +272,13 @@ struct NetDetail {
     var download: Double
     var totalUp: UInt64
     var totalDown: UInt64
-    var interfaceName: String
+    var interfaceName: String     // BSD name, e.g. "en0"
+    var displayName: String       // localized, e.g. "Wi-Fi"
+    var macAddress: String        // e.g. "a4:c3:f0:12:34:56"
+    var ssid: String?             // WiFi only
     var localIP: String
+    var publicIP: String?         // async-fetched; nil until available
+    var transmitRate: Double      // Mbps from ifi_baudrate
     var isUp: Bool
     var history: [(up: Double, down: Double)]
 }
@@ -276,11 +291,23 @@ final class NetReader {
     private var lastTime = Date()
     private var history: [(up: Double, down: Double)] = []
 
+    // Interface detail cache — refreshed at most every 15 s
+    private var detailsLastRead = Date.distantPast
+    private var cachedDisplayName = ""
+    private var cachedMAC = ""
+    private var cachedSSID: String? = nil
+    private var cachedTransmitRate: Double = 0
+
+    // Public IP — fetched async, at most every 300 s
+    private var publicIPLastFetch = Date.distantPast
+    private var cachedPublicIP: String? = nil
+
     func read() -> NetDetail {
         var ifap: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifap) == 0, let head = ifap else {
             return NetDetail(upload: 0, download: 0, totalUp: cumulativeUp, totalDown: cumulativeDown,
-                             interfaceName: "", localIP: "", isUp: false, history: history)
+                             interfaceName: "", displayName: "", macAddress: "", ssid: nil,
+                             localIP: "", publicIP: nil, transmitRate: 0, isUp: false, history: history)
         }
         defer { freeifaddrs(head) }
 
@@ -289,6 +316,8 @@ final class NetReader {
         var primaryIface = ""
         var localIP = ""
         var isUp = false
+        var macFromLink = ""
+        var transmitFromLink: Double = 0
 
         var cursor: UnsafeMutablePointer<ifaddrs>? = head
         while let iface = cursor {
@@ -298,11 +327,24 @@ final class NetReader {
 
             if iface.pointee.ifa_addr?.pointee.sa_family == UInt8(AF_LINK),
                let raw = iface.pointee.ifa_data {
-                let data = raw.assumingMemoryBound(to: if_data.self).pointee
-                totalUp   += UInt64(data.ifi_obytes)
-                totalDown += UInt64(data.ifi_ibytes)
-                if primaryIface.isEmpty { primaryIface = name }
-                isUp = (iface.pointee.ifa_flags & UInt32(IFF_UP)) != 0
+                let ifData = raw.assumingMemoryBound(to: if_data.self).pointee
+                totalUp   += UInt64(ifData.ifi_obytes)
+                totalDown += UInt64(ifData.ifi_ibytes)
+                if primaryIface.isEmpty {
+                    primaryIface = name
+                    isUp = (iface.pointee.ifa_flags & UInt32(IFF_UP)) != 0
+                    transmitFromLink = Double(ifData.ifi_baudrate) / 1_000_000
+                    // MAC from sockaddr_dl
+                    iface.pointee.ifa_addr!.withMemoryRebound(to: sockaddr_dl.self, capacity: 1) { sdl in
+                        let alen = Int(sdl.pointee.sdl_alen)
+                        let nlen = Int(sdl.pointee.sdl_nlen)
+                        if alen == 6 {
+                            macFromLink = withUnsafeBytes(of: sdl.pointee.sdl_data) { raw in
+                                (0..<6).map { String(format: "%02x", raw[nlen + $0]) }.joined(separator: ":")
+                            }
+                        }
+                    }
+                }
             }
 
             if iface.pointee.ifa_addr?.pointee.sa_family == UInt8(AF_INET),
@@ -340,15 +382,60 @@ final class NetReader {
         history.append((up: upRate, down: downRate))
         if history.count > 180 { history.removeFirst() }
 
+        // Refresh slow/cached details
+        if !macFromLink.isEmpty { cachedMAC = macFromLink }
+        if transmitFromLink > 0 { cachedTransmitRate = transmitFromLink }
+        refreshDetails(ifName: primaryIface)
+        refreshPublicIP()
+
         return NetDetail(
             upload: upRate,
             download: downRate,
             totalUp: cumulativeUp,
             totalDown: cumulativeDown,
             interfaceName: primaryIface,
+            displayName: cachedDisplayName,
+            macAddress: cachedMAC,
+            ssid: cachedSSID,
             localIP: localIP,
+            publicIP: cachedPublicIP,
+            transmitRate: cachedTransmitRate,
             isUp: isUp,
             history: history
         )
+    }
+
+    // Reads display name and SSID via SystemConfiguration — throttled to 15 s
+    private func refreshDetails(ifName: String) {
+        guard !ifName.isEmpty, Date().timeIntervalSince(detailsLastRead) >= 15 else { return }
+        detailsLastRead = Date()
+
+        for case let scIface as SCNetworkInterface in SCNetworkInterfaceCopyAll() as NSArray {
+            guard let bsd = SCNetworkInterfaceGetBSDName(scIface) as String?,
+                  bsd == ifName else { continue }
+            cachedDisplayName = SCNetworkInterfaceGetLocalizedDisplayName(scIface) as String? ?? ifName
+            // SSID for WiFi interfaces via SCDynamicStore
+            let ifType = SCNetworkInterfaceGetInterfaceType(scIface) as String?
+            if ifType == (kSCNetworkInterfaceTypeIEEE80211 as String) {
+                let key = "State:/Network/Interface/\(ifName)/AirPort" as CFString
+                if let info = SCDynamicStoreCopyValue(nil, key) as? [String: Any] {
+                    cachedSSID = info["SSID_STR"] as? String
+                }
+            } else {
+                cachedSSID = nil
+            }
+            break
+        }
+    }
+
+    // Fetches public IPv4 from ipify — throttled to 300 s, non-blocking
+    private func refreshPublicIP() {
+        guard Date().timeIntervalSince(publicIPLastFetch) >= 300 else { return }
+        publicIPLastFetch = Date()
+        URLSession.shared.dataTask(with: URL(string: "https://api.ipify.org")!) { [weak self] data, _, _ in
+            guard let self, let data,
+                  let ip = String(data: data, encoding: .utf8) else { return }
+            self.cachedPublicIP = ip.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.resume()
     }
 }

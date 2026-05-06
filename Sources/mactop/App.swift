@@ -17,6 +17,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var gpuView: MiniView!
     private var netView: SpeedView!
     private var monitor: SystemMonitor!
+    private var netProcessTimer: Timer?
+    private var netProcessReader = NetProcessReader()
 
     private var cpuPopupView: CPUPopupView!
     private var ramPopupView: RAMPopupView!
@@ -27,8 +29,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var ramPanel: PopupPanel!
     private var gpuPanel: PopupPanel!
     private var netPanel: PopupPanel!
+    private var statusPanels: [PopupPanel] = []
 
-    private var allPanels: [PopupPanel] { [cpuPanel, ramPanel, gpuPanel, netPanel] }
+    private var allPanels: [PopupPanel] { statusPanels }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let barH  = NSStatusBar.system.thickness
@@ -49,10 +52,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         gpuPanel = PopupPanel(contentView: gpuPopupView)
         netPanel = PopupPanel(contentView: netPopupView)
 
-        let views: [(NSView, CGFloat)] = [
-            (cpuView!, 31), (ramView!, 31), (gpuView!, 31), (netView!, 55)
+        let entries: [(view: NSView, width: CGFloat, panel: PopupPanel)] = [
+            (netView!, 55, netPanel),
+            (cpuView!, 31, cpuPanel),
+            (ramView!, 31, ramPanel),
+            (gpuView!, 31, gpuPanel),
         ]
-        for (view, w) in views {
+        for entry in entries {
+            let view = entry.view
+            let w = entry.width
             let item = NSStatusBar.system.statusItem(withLength: w)
             guard let button = item.button else { continue }
             view.frame = CGRect(x: 0, y: 2, width: w, height: viewH)
@@ -61,6 +69,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             button.target = self
             button.sendAction(on: .leftMouseUp)
             statusItems.append(item)
+            statusPanels.append(entry.panel)
         }
 
         let config = Config.load()
@@ -91,6 +100,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             self?.closeAllPanels()
+        }
+
+        // nettop spawns a subprocess — run it off the main thread so it never
+        // blocks the run loop or status-bar repaints.
+        netProcessTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                guard let self else { return }
+                let procs = self.netProcessReader.read()
+                DispatchQueue.main.async { [weak self] in
+                    self?.netPopupView.updateProcesses(procs)
+                }
+            }
         }
     }
 

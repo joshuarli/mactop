@@ -701,8 +701,22 @@ final class NetPopupView: NSStackView {
     private var totalUpField:   ValueField!
     private var totalDownField: ValueField!
     private var statusField:    ValueField!
-    private var interfaceField: ValueField!
-    private var localIPField:   ValueField!
+
+    // Interface section
+    private var ifaceStack: NSStackView!
+    private var interfaceField:       ValueField!
+    private var ifaceStatusField:     ValueField!
+    private var macField:             ValueField!
+    private var ssidRow:              NSView?
+    private var ssidField:            ValueField?
+    private var speedField:           ValueField!
+
+    // Address section
+    private var localIPField:  ValueField!
+    private var publicIPField: ValueField!
+
+    private var netProcessesView: ProcessesView!
+    private let processCount = 8
 
     init() {
         super.init(frame: NSRect(x: 0, y: 0, width: popupWidth, height: 0))
@@ -713,6 +727,8 @@ final class NetPopupView: NSStackView {
         addArrangedSubview(initConnectivityChart())
         addArrangedSubview(initDetails())
         addArrangedSubview(initInterface())
+        addArrangedSubview(initAddress())
+        addArrangedSubview(initProcesses())
         recalcHeight()
     }
 
@@ -861,17 +877,69 @@ final class NetPopupView: NSStackView {
     }
 
     private func initInterface() -> NSView {
-        let view = NSStackView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: 0))
+        let rowCount: CGFloat = 5
+        let h = sepHeight + rowCount * rowHeight
+        let view = NSStackView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: h))
         view.orientation = .vertical; view.spacing = 0
+        view.heightAnchor.constraint(equalToConstant: h).isActive = true
+        ifaceStack = view
+
+        let sepRow = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: sepHeight))
+        sepRow.heightAnchor.constraint(equalToConstant: sepHeight).isActive = true
+        sepRow.addSubview(separatorView("Interface", width: popupWidth))
+        view.addArrangedSubview(sepRow)
+
+        interfaceField   = popupRow(view, title: "Interface:",        value: "Unknown").1
+        ifaceStatusField = popupRow(view, title: "Status:",           value: "Unknown").1
+        macField         = popupRow(view, title: "Physical address:", value: "Unknown").1
+        let ssidResult   = popupRow(view, title: "Network:",          value: "—")
+        ssidField        = ssidResult.1
+        ssidRow          = ssidResult.2
+        speedField       = popupRow(view, title: "Speed:",            value: "Unknown").1
+        return view
+    }
+
+    private func initAddress() -> NSView {
+        let rowCount: CGFloat = 2
+        let h = sepHeight + rowCount * rowHeight
+        let view = NSStackView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: h))
+        view.orientation = .vertical; view.spacing = 0
+        view.heightAnchor.constraint(equalToConstant: h).isActive = true
 
         let sepRow = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: sepHeight))
         sepRow.heightAnchor.constraint(equalToConstant: sepHeight).isActive = true
         sepRow.addSubview(separatorView("Address", width: popupWidth))
         view.addArrangedSubview(sepRow)
 
-        interfaceField = popupRow(view, title: "Interface:", value: "Unknown").1
-        localIPField   = popupRow(view, title: "Local IP:",  value: "Unknown").1
+        localIPField  = popupRow(view, title: "Local IP:",  value: "Unknown").1
+        publicIPField = popupRow(view, title: "Public IP:", value: "Unknown").1
         return view
+    }
+
+    private func initProcesses() -> NSView {
+        let procViewH = CGFloat(processCount + 1) * rowHeight
+        let totalH = sepHeight + procViewH
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: totalH))
+        view.heightAnchor.constraint(equalToConstant: totalH).isActive = true
+
+        let sep = separatorView("Top processes")
+        sep.frame = NSRect(x: 0, y: procViewH, width: popupWidth, height: sepHeight)
+        view.addSubview(sep)
+
+        netProcessesView = ProcessesView(
+            frame: NSRect(x: 0, y: 0, width: popupWidth, height: procViewH),
+            count: processCount,
+            valueHeader: "Network"
+        )
+        view.addSubview(netProcessesView)
+        return view
+    }
+
+    func updateProcesses(_ procs: [TopProcess]) {
+        netProcessesView.setProcesses(procs) { v in
+            let (val, unit) = speedTuple(v)
+            return "\(val) \(unit)"
+        }
     }
 
     private func setSpeedFields(upload: Double, download: Double) {
@@ -906,8 +974,19 @@ final class NetPopupView: NSStackView {
         totalUpField.stringValue   = fmtMemory(d.totalUp)
         totalDownField.stringValue = fmtMemory(d.totalDown)
         statusField.stringValue    = d.isUp ? "UP" : "DOWN"
-        interfaceField.stringValue = d.interfaceName.isEmpty ? "Unknown" : d.interfaceName
-        localIPField.stringValue   = d.localIP.isEmpty ? "Unknown" : d.localIP
+
+        let ifaceName = d.interfaceName.isEmpty ? "Unknown" : d.interfaceName
+        let dispName  = d.displayName.isEmpty   ? ifaceName : d.displayName
+        interfaceField.stringValue   = "\(dispName) (\(ifaceName))"
+        ifaceStatusField.stringValue = d.isUp ? "Active" : "Inactive"
+        macField.stringValue         = d.macAddress.isEmpty ? "Unknown" : d.macAddress
+        ssidField?.stringValue       = d.ssid ?? "—"
+        speedField.stringValue       = d.transmitRate > 0
+            ? "\(Int(d.transmitRate)) Mbps"
+            : "Unknown"
+
+        localIPField.stringValue  = d.localIP.isEmpty    ? "Unknown" : d.localIP
+        publicIPField.stringValue = d.publicIP ?? "Fetching…"
 
         usageChart.addValue(upload: d.upload, download: d.download)
         connectivityChart.addValue(d.isUp)
