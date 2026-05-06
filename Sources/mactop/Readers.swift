@@ -303,6 +303,7 @@ final class NetReader {
     private var cachedPublicIP: String? = nil
 
     func read() -> NetDetail {
+        let preferredIface = primaryInterfaceName()
         var ifap: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifap) == 0, let head = ifap else {
             return NetDetail(upload: 0, download: 0, totalUp: cumulativeUp, totalDown: cumulativeDown,
@@ -318,6 +319,8 @@ final class NetReader {
         var isUp = false
         var macFromLink = ""
         var transmitFromLink: Double = 0
+        var linkDetails: [String: (isUp: Bool, mac: String, transmitRate: Double)] = [:]
+        var ipByInterface: [String: String] = [:]
 
         var cursor: UnsafeMutablePointer<ifaddrs>? = head
         while let iface = cursor {
@@ -330,25 +333,25 @@ final class NetReader {
                 let ifData = raw.assumingMemoryBound(to: if_data.self).pointee
                 totalUp   += UInt64(ifData.ifi_obytes)
                 totalDown += UInt64(ifData.ifi_ibytes)
-                if primaryIface.isEmpty {
-                    primaryIface = name
-                    isUp = (iface.pointee.ifa_flags & UInt32(IFF_UP)) != 0
-                    transmitFromLink = Double(ifData.ifi_baudrate) / 1_000_000
-                    // MAC from sockaddr_dl
-                    iface.pointee.ifa_addr!.withMemoryRebound(to: sockaddr_dl.self, capacity: 1) { sdl in
-                        let alen = Int(sdl.pointee.sdl_alen)
-                        let nlen = Int(sdl.pointee.sdl_nlen)
-                        if alen == 6 {
-                            macFromLink = withUnsafeBytes(of: sdl.pointee.sdl_data) { raw in
-                                (0..<6).map { String(format: "%02x", raw[nlen + $0]) }.joined(separator: ":")
-                            }
+                var mac = ""
+                iface.pointee.ifa_addr!.withMemoryRebound(to: sockaddr_dl.self, capacity: 1) { sdl in
+                    let alen = Int(sdl.pointee.sdl_alen)
+                    let nlen = Int(sdl.pointee.sdl_nlen)
+                    if alen == 6 {
+                        mac = withUnsafeBytes(of: sdl.pointee.sdl_data) { raw in
+                            (0..<6).map { String(format: "%02x", raw[nlen + $0]) }.joined(separator: ":")
                         }
                     }
                 }
+                linkDetails[name] = (
+                    isUp: (iface.pointee.ifa_flags & UInt32(IFF_UP)) != 0,
+                    mac: mac,
+                    transmitRate: Double(ifData.ifi_baudrate) / 1_000_000
+                )
             }
 
             if iface.pointee.ifa_addr?.pointee.sa_family == UInt8(AF_INET),
-               localIP.isEmpty {
+               ipByInterface[name] == nil {
                 var addr = iface.pointee.ifa_addr!.pointee
                 var buf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
                 withUnsafeMutablePointer(to: &addr) {
@@ -357,9 +360,24 @@ final class NetReader {
                         inet_ntop(AF_INET, &inAddr, &buf, socklen_t(INET_ADDRSTRLEN))
                     }
                 }
-                localIP = String(cString: buf)
+                ipByInterface[name] = String(cString: buf)
             }
         }
+
+        if let preferredIface, linkDetails[preferredIface] != nil {
+            primaryIface = preferredIface
+        } else if let active = linkDetails.keys.sorted().first(where: { ipByInterface[$0] != nil }) {
+            primaryIface = active
+        } else if let first = linkDetails.keys.sorted().first {
+            primaryIface = first
+        }
+
+        if let link = linkDetails[primaryIface] {
+            isUp = link.isUp
+            macFromLink = link.mac
+            transmitFromLink = link.transmitRate
+        }
+        localIP = ipByInterface[primaryIface] ?? ""
 
         let now = Date()
         let elapsed = now.timeIntervalSince(lastTime)
@@ -403,6 +421,14 @@ final class NetReader {
             isUp: isUp,
             history: history
         )
+    }
+
+    private func primaryInterfaceName() -> String? {
+        guard let store = SCDynamicStoreCreate(nil, "mactop" as CFString, nil, nil),
+              let global = SCDynamicStoreCopyValue(store, "State:/Network/Global/IPv4" as CFString) as? [String: Any],
+              let iface = global["PrimaryInterface"] as? String,
+              !iface.isEmpty else { return nil }
+        return iface
     }
 
     // Reads display name and SSID via SystemConfiguration — throttled to 15 s

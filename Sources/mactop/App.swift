@@ -102,8 +102,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.closeAllPanels()
         }
 
-        // nettop spawns a subprocess — run it off the main thread so it never
-        // blocks the run loop or status-bar repaints.
+        // NetworkStatistics uses private asynchronous callbacks; keep it off
+        // the main thread so it never blocks status-bar repaints.
         netProcessTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             guard let self else { return }
             DispatchQueue.global(qos: .utility).async { [weak self] in
