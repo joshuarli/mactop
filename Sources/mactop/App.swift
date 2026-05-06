@@ -17,7 +17,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var gpuView: MiniView!
     private var netView: SpeedView!
     private var monitor: SystemMonitor!
-    private var netProcessTimer: Timer?
+    private var detailTimer: DispatchSourceTimer?
+    private let cpuProcessQueue = DispatchQueue(label: "mactop.cpu-process-reader", qos: .utility)
+    private let ramProcessQueue = DispatchQueue(label: "mactop.ram-process-reader", qos: .utility)
+    private let netProcessQueue = DispatchQueue(label: "mactop.net-process-reader", qos: .utility)
+    private var cpuProcessReader = CPUProcessReader()
+    private var ramProcessReader = RAMProcessReader()
     private var netProcessReader = NetProcessReader()
 
     private var cpuPopupView: CPUPopupView!
@@ -32,6 +37,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusPanels: [PopupPanel] = []
 
     private var allPanels: [PopupPanel] { statusPanels }
+    private var latestCPU: CPUDetail?
+    private var latestRAM: RAMDetail?
+    private var latestGPU: GPUDetail?
+    private var latestNet: NetDetail?
+    private var latestCPUProcesses: [TopProcess] = []
+    private var latestRAMProcesses: [TopProcess] = []
+    private var latestNetProcesses: [TopProcess] = []
+    private var cpuProcessReadInFlight = false
+    private var ramProcessReadInFlight = false
+    private var netProcessReadInFlight = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let barH  = NSStatusBar.system.thickness
@@ -75,26 +90,38 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let config = Config.load()
         monitor = SystemMonitor(
             config: config,
-            onCPU: { [weak self] cpu, procs in
+            onCPU: { [weak self] cpu in
                 guard let self else { return }
+                self.latestCPU = cpu
                 self.cpuView.value = cpu.total
-                self.cpuPopupView.update(cpu, processes: procs)
+                if self.cpuPanel.isVisible {
+                    self.cpuPopupView.update(cpu, processes: self.latestCPUProcesses)
+                }
             },
-            onRAM: { [weak self] ram, procs in
+            onRAM: { [weak self] ram in
                 guard let self else { return }
+                self.latestRAM = ram
                 self.ramView.value = ram.total
-                self.ramPopupView.update(ram, processes: procs)
+                if self.ramPanel.isVisible {
+                    self.ramPopupView.update(ram, processes: self.latestRAMProcesses)
+                }
             },
             onGPU: { [weak self] gpu in
                 guard let self else { return }
+                self.latestGPU = gpu
                 self.gpuView.value = gpu.total
-                self.gpuPopupView.update(gpu)
+                if self.gpuPanel.isVisible {
+                    self.gpuPopupView.update(gpu)
+                }
             },
             onNet: { [weak self] net in
                 guard let self else { return }
+                self.latestNet = net
                 self.netView.upload   = Int64(net.upload)
                 self.netView.download = Int64(net.download)
-                self.netPopupView.update(net)
+                if self.netPanel.isVisible {
+                    self.netPopupView.update(net)
+                }
             }
         )
 
@@ -102,17 +129,84 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.closeAllPanels()
         }
 
-        // NetworkStatistics uses private asynchronous callbacks; keep it off
-        // the main thread so it never blocks status-bar repaints.
-        netProcessTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+        cpuProcessQueue.async { [weak self] in
+            _ = self?.cpuProcessReader.read()
+        }
+        netProcessQueue.async { [weak self] in
+            _ = self?.netProcessReader.read()
+        }
+
+        let detailTimer = DispatchSource.makeTimerSource(queue: .main)
+        detailTimer.schedule(deadline: .now() + .seconds(3), repeating: .seconds(3), leeway: .milliseconds(250))
+        detailTimer.setEventHandler { [weak self] in
             guard let self else { return }
-            DispatchQueue.global(qos: .utility).async { [weak self] in
+            if self.cpuPanel.isVisible {
+                self.refreshProcesses(for: 1)
+            }
+            if self.ramPanel.isVisible {
+                self.refreshProcesses(for: 2)
+            }
+            if self.netPanel.isVisible {
+                self.refreshProcesses(for: 0)
+            }
+        }
+        detailTimer.resume()
+        self.detailTimer = detailTimer
+    }
+
+    deinit {
+        detailTimer?.cancel()
+    }
+
+    private func refreshProcesses(for index: Int) {
+        switch index {
+        case 0:
+            guard !netProcessReadInFlight else { return }
+            netProcessReadInFlight = true
+            netProcessQueue.async { [weak self] in
                 guard let self else { return }
                 let procs = self.netProcessReader.read()
                 DispatchQueue.main.async { [weak self] in
-                    self?.netPopupView.updateProcesses(procs)
+                    guard let self else { return }
+                    self.netProcessReadInFlight = false
+                    self.latestNetProcesses = procs
+                    if self.netPanel.isVisible {
+                        self.netPopupView.updateProcesses(procs)
+                    }
                 }
             }
+        case 1:
+            guard !cpuProcessReadInFlight else { return }
+            cpuProcessReadInFlight = true
+            cpuProcessQueue.async { [weak self] in
+                guard let self else { return }
+                let procs = self.cpuProcessReader.read()
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.cpuProcessReadInFlight = false
+                    self.latestCPUProcesses = procs
+                    if self.cpuPanel.isVisible, let latestCPU = self.latestCPU {
+                        self.cpuPopupView.update(latestCPU, processes: procs)
+                    }
+                }
+            }
+        case 2:
+            guard !ramProcessReadInFlight else { return }
+            ramProcessReadInFlight = true
+            ramProcessQueue.async { [weak self] in
+                guard let self else { return }
+                let procs = self.ramProcessReader.read()
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.ramProcessReadInFlight = false
+                    self.latestRAMProcesses = procs
+                    if self.ramPanel.isVisible, let latestRAM = self.latestRAM {
+                        self.ramPopupView.update(latestRAM, processes: procs)
+                    }
+                }
+            }
+        default:
+            break
         }
     }
 
@@ -134,9 +228,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         guard let button = item.button,
-              let screen = button.window?.screen ?? NSScreen.main else { return }
+              let window = button.window,
+              let screen = window.screen ?? NSScreen.main else { return }
 
-        let buttonRect = button.window!.convertToScreen(button.frame)
+        let buttonRect = window.convertToScreen(button.frame)
         let panelW = targetPanel.frame.width
         let panelH = targetPanel.frame.height
 
@@ -152,11 +247,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         targetPanel.setFrameOrigin(NSPoint(x: x, y: y))
+        refreshPopup(at: idx, syncHistory: true)
+        refreshProcesses(for: idx)
         targetPanel.makeKeyAndOrderFront(nil)
     }
 
     private func closeAllPanels() {
         allPanels.forEach { $0.orderOut(nil) }
+    }
+
+    private func refreshPopup(at index: Int, syncHistory: Bool) {
+        switch index {
+        case 0:
+            if let latestNet {
+                netPopupView.update(latestNet, syncHistory: syncHistory)
+            }
+            netPopupView.updateProcesses(latestNetProcesses)
+        case 1:
+            if let latestCPU {
+                cpuPopupView.update(latestCPU, processes: latestCPUProcesses, syncHistory: syncHistory)
+            }
+        case 2:
+            if let latestRAM {
+                ramPopupView.update(latestRAM, processes: latestRAMProcesses, syncHistory: syncHistory)
+            }
+        case 3:
+            if let latestGPU {
+                gpuPopupView.update(latestGPU, syncHistory: syncHistory)
+            }
+        default:
+            break
+        }
     }
 }
 
@@ -165,40 +286,56 @@ final class SystemMonitor {
     private let ramReader        = RAMReader()
     private let gpuReader        = GPUReader()
     private let netReader        = NetReader()
-    private let cpuProcessReader = CPUProcessReader()
-    private let ramProcessReader = RAMProcessReader()
-    private var timers: [Timer]  = []
+    private let cpuQueue = DispatchQueue(label: "mactop.monitor.cpu", qos: .utility)
+    private let ramQueue = DispatchQueue(label: "mactop.monitor.ram", qos: .utility)
+    private let gpuQueue = DispatchQueue(label: "mactop.monitor.gpu", qos: .utility)
+    private let netQueue = DispatchQueue(label: "mactop.monitor.net", qos: .utility)
+    private var timers: [DispatchSourceTimer] = []
 
     init(config: Config,
-         onCPU: @escaping (CPUDetail, [TopProcess]) -> Void,
-         onRAM: @escaping (RAMDetail, [TopProcess]) -> Void,
+         onCPU: @escaping (CPUDetail) -> Void,
+         onRAM: @escaping (RAMDetail) -> Void,
          onGPU: @escaping (GPUDetail) -> Void,
          onNet: @escaping (NetDetail) -> Void) {
 
-        _ = cpuReader.read()
-        _ = netReader.read()
+        cpuQueue.sync { _ = cpuReader.read() }
+        netQueue.sync { _ = netReader.read() }
 
-        func every(_ interval: Double, _ block: @escaping () -> Void) -> Timer {
-            Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in block() }
+        func every(_ interval: Double, queue: DispatchQueue, _ block: @escaping () -> Void) -> DispatchSourceTimer {
+            let timer = DispatchSource.makeTimerSource(queue: queue)
+            let ms = max(1, Int(interval * 1000))
+            let repeating = DispatchTimeInterval.milliseconds(ms)
+            timer.schedule(deadline: .now() + repeating, repeating: repeating, leeway: .milliseconds(100))
+            timer.setEventHandler(handler: block)
+            timer.resume()
+            return timer
         }
 
         timers = [
-            every(config.cpuInterval) { [weak self] in
+            every(config.cpuInterval, queue: cpuQueue) { [weak self] in
                 guard let self else { return }
-                onCPU(self.cpuReader.read(), self.cpuProcessReader.read())
+                let cpu = self.cpuReader.read()
+                DispatchQueue.main.async { onCPU(cpu) }
             },
-            every(config.ramInterval) { [weak self] in
+            every(config.ramInterval, queue: ramQueue) { [weak self] in
                 guard let self else { return }
-                onRAM(self.ramReader.read(), self.ramProcessReader.read())
+                let ram = self.ramReader.read()
+                DispatchQueue.main.async { onRAM(ram) }
             },
-            every(config.gpuInterval) { [weak self] in
+            every(config.gpuInterval, queue: gpuQueue) { [weak self] in
                 guard let self else { return }
-                onGPU(self.gpuReader.read())
+                let gpu = self.gpuReader.read()
+                DispatchQueue.main.async { onGPU(gpu) }
             },
-            every(config.netInterval) { [weak self] in
+            every(config.netInterval, queue: netQueue) { [weak self] in
                 guard let self else { return }
-                onNet(self.netReader.read())
+                let net = self.netReader.read()
+                DispatchQueue.main.async { onNet(net) }
             },
         ]
+    }
+
+    deinit {
+        timers.forEach { $0.cancel() }
     }
 }

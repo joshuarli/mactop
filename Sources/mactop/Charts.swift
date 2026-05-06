@@ -2,12 +2,6 @@ import AppKit
 
 // MARK: - Support types
 
-struct DoubleValue {
-    var ts: Date = Date()
-    let value: Double
-    init(_ value: Double = 0) { self.value = value }
-}
-
 struct ColorValue {
     let value: Double
     var color: NSColor?
@@ -165,7 +159,9 @@ final class PieChartView: NSView {
 final class LineChartView: NSView {
     var id: String = UUID().uuidString
 
-    private var points: [DoubleValue?]
+    private var points: [Double?]
+    private var nextPointIndex = 0
+    private var pointsAreFull = false
     private var color: NSColor
     private var cursor: NSPoint? = nil
     private var flipY = false
@@ -184,14 +180,15 @@ final class LineChartView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        guard let ctx = NSGraphicsContext.current?.cgContext, !points.isEmpty else { return }
+        guard let ctx = NSGraphicsContext.current?.cgContext, points.count > 1 else { return }
         ctx.setShouldAntialias(true)
 
         let offset: CGFloat = 1 / (NSScreen.main?.backingScaleFactor ?? 1)
         let height = frame.height - offset
         let width = frame.width
         let xRatio = width / CGFloat(points.count - 1)
-        let maxValue = fixedMax ?? points.compactMap({ $0 }).map({ $0.value }).max() ?? 1
+        let values = orderedPoints()
+        let maxValue = fixedMax ?? values.compactMap({ $0 }).max() ?? 1
 
         let lineColor = color
         let gradientColor = color.withAlphaComponent(0.5)
@@ -200,14 +197,14 @@ final class LineChartView: NSView {
 
         var line: [CGPoint] = []
         var allLines: [[CGPoint]] = []
-        var list: [(value: DoubleValue, point: CGPoint)] = []
+        var list: [(value: Double, point: CGPoint)] = []
 
-        for (i, v) in points.enumerated() {
+        for (i, v) in values.enumerated() {
             guard let v else {
                 if !line.isEmpty { allLines.append(line); line = [] }
                 continue
             }
-            let normalizedY = maxValue > 0 ? CGFloat(v.value / maxValue) * height : 0
+            let normalizedY = maxValue > 0 ? CGFloat(v / maxValue) * height : 0
             let y = flipY ? height - normalizedY : normalizedY
             let pt = CGPoint(x: CGFloat(i) * xRatio, y: y)
             line.append(pt)
@@ -224,9 +221,10 @@ final class LineChartView: NSView {
             path.lineWidth = offset
             path.stroke()
 
-            let fillPath = path.copy() as! NSBezierPath
+            guard let fillPath = path.copy() as? NSBezierPath,
+                  let lastPoint = linePoints.last else { continue }
             let baseline = flipY ? height : 0
-            fillPath.line(to: CGPoint(x: linePoints.last!.x, y: baseline))
+            fillPath.line(to: CGPoint(x: lastPoint.x, y: baseline))
             fillPath.line(to: CGPoint(x: linePoints[0].x, y: baseline))
             fillPath.close()
             gradient?.draw(in: fillPath, angle: 90)
@@ -234,12 +232,7 @@ final class LineChartView: NSView {
 
         // Tooltip on hover
         if let p = cursor, !list.isEmpty {
-            let overPoints = list.filter { $0.point.x >= p.x }
-            let underPoints = list.filter { $0.point.x <= p.x }
-            if let over = overPoints.min(by: { $0.point.x < $1.point.x }),
-               let under = underPoints.max(by: { $0.point.x < $1.point.x }) {
-                let nearest = (over.point.x - p.x < p.x - under.point.x) ? over : under
-
+            if let nearest = list.min(by: { abs($0.point.x - p.x) < abs($1.point.x - p.x) }) {
                 let vLine = NSBezierPath()
                 vLine.setLineDash([4, 4], count: 2, phase: 0)
                 vLine.move(to: CGPoint(x: p.x, y: 0)); vLine.line(to: CGPoint(x: p.x, y: height))
@@ -250,7 +243,7 @@ final class LineChartView: NSView {
                 hLine.move(to: CGPoint(x: 0, y: p.y)); hLine.line(to: CGPoint(x: frame.width, y: p.y))
                 hLine.lineWidth = offset; hLine.stroke()
 
-                let pct = "\(Int((nearest.value.value * 100).rounded()))%"
+                let pct = "\(Int((nearest.value * 100).rounded()))%"
                 let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12, weight: .regular), .foregroundColor: isDarkMode ? NSColor.white : NSColor.textColor]
                 let tw = pct.widthOfString(usingFont: NSFont.systemFont(ofSize: 12))
                 let tx = nearest.point.x + 4 + tw > frame.width ? nearest.point.x - tw - 4 : nearest.point.x + 4
@@ -268,9 +261,26 @@ final class LineChartView: NSView {
 
     func addValue(_ v: Double) {
         guard !points.isEmpty else { return }
-        points.removeFirst()
-        points.append(DoubleValue(v))
+        points[nextPointIndex] = v
+        nextPointIndex = (nextPointIndex + 1) % points.count
+        if nextPointIndex == 0 { pointsAreFull = true }
         if window?.isVisible ?? false { display() }
+    }
+
+    func setValues(_ values: [Double]) {
+        points = Array(repeating: nil, count: points.count)
+        nextPointIndex = 0
+        pointsAreFull = false
+        for value in values.suffix(points.count) {
+            points[nextPointIndex] = value
+            nextPointIndex = (nextPointIndex + 1) % points.count
+            if nextPointIndex == 0 { pointsAreFull = true }
+        }
+        if window?.isVisible ?? false {
+            display()
+        } else {
+            needsDisplay = true
+        }
     }
 
     func setColor(_ c: NSColor) { color = c; needsDisplay = true }
@@ -278,14 +288,21 @@ final class LineChartView: NSView {
 
     func reinit(_ num: Int = 60) {
         guard points.count != num else { return }
-        if num < points.count {
-            points = Array(points[points.count-num..<points.count])
-        } else {
-            let origin = points
-            points = Array(repeating: nil, count: num)
-            points.replaceSubrange((num-origin.count)..<num, with: origin)
-        }
+        let values = orderedPoints().compactMap { $0 }
+        points = Array(repeating: nil, count: max(num, 1))
+        nextPointIndex = 0
+        pointsAreFull = false
+        setValues(values)
         needsDisplay = true
+    }
+
+    private func orderedPoints() -> [Double?] {
+        guard !points.isEmpty else { return [] }
+        if pointsAreFull {
+            return Array(points[nextPointIndex..<points.count] + points[0..<nextPointIndex])
+        }
+        let prefixCount = points.count - nextPointIndex
+        return Array(repeating: nil, count: prefixCount) + points[0..<nextPointIndex]
     }
 }
 
@@ -359,7 +376,14 @@ final class ColumnChartView: NSView {
         }
     }
 
-    func setValues(_ v: [ColorValue]) { values = v; if window?.isVisible ?? false { display() } }
+    func setValues(_ v: [ColorValue]) {
+        values = v
+        if window?.isVisible ?? false {
+            display()
+        } else {
+            needsDisplay = true
+        }
+    }
 
     override func mouseEntered(with event: NSEvent) { cursor = convert(event.locationInWindow, from: nil); display() }
     override func mouseMoved(with event: NSEvent) { cursor = convert(event.locationInWindow, from: nil); display() }
@@ -393,6 +417,11 @@ final class NetworkChartView: NSView {
         inChart.addValue(download)
     }
 
+    func setValues(_ values: [(up: Double, down: Double)]) {
+        outChart.setValues(values.map(\.up))
+        inChart.setValues(values.map(\.down))
+    }
+
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         let h = max(newSize.height, 2)
@@ -409,6 +438,8 @@ final class GridChartView: NSView {
     private let notOkColor: NSColor = .systemRed
     private let inactiveColor: NSColor = .underPageBackgroundColor.withAlphaComponent(0.4)
     private var values: [NSColor] = []
+    private var nextValueIndex = 0
+    private var valuesAreFull = false
     private let grid: (rows: Int, columns: Int)
 
     init(frame: NSRect, grid: (rows: Int, columns: Int)) {
@@ -420,6 +451,7 @@ final class GridChartView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     override func draw(_ dirtyRect: NSRect) {
+        let drawValues = orderedValues()
         let spacing: CGFloat = 2
         let size = CGSize(
             width:  (frame.width  - CGFloat(grid.rows-1)    * spacing) / CGFloat(grid.rows),
@@ -430,7 +462,7 @@ final class GridChartView: NSView {
         for _ in 0..<grid.columns {
             for _ in 0..<grid.rows {
                 let box = NSBezierPath(roundedRect: NSRect(origin: origin, size: size), xRadius: 1, yRadius: 1)
-                values[i].setFill(); box.fill()
+                drawValues[i].setFill(); box.fill()
                 i += 1; origin.x += size.width + spacing
             }
             origin.x = 0; origin.y -= size.height + spacing
@@ -438,8 +470,17 @@ final class GridChartView: NSView {
     }
 
     func addValue(_ ok: Bool) {
-        values.removeFirst()
-        values.append(ok ? okColor : notOkColor)
+        values[nextValueIndex] = ok ? okColor : notOkColor
+        nextValueIndex = (nextValueIndex + 1) % values.count
+        if nextValueIndex == 0 { valuesAreFull = true }
         if window?.isVisible ?? false { display() }
+    }
+
+    private func orderedValues() -> [NSColor] {
+        guard !values.isEmpty else { return [] }
+        if valuesAreFull {
+            return Array(values[nextValueIndex..<values.count] + values[0..<nextValueIndex])
+        }
+        return Array(repeating: inactiveColor, count: values.count - nextValueIndex) + values[0..<nextValueIndex]
     }
 }

@@ -104,6 +104,8 @@ private final class ProcessesView: NSView {
     private var iconViews:   [NSImageView] = []
     private var nameLabels:  [LabelField]  = []
     private var valueLabels: [ValueField]  = []
+    private var iconCacheByPID: [Int32: NSImage] = [:]
+    private var iconCacheByName: [String: NSImage] = [:]
 
     init(frame: NSRect, count: Int, valueHeader _: String) {
         self.processCount = count
@@ -136,30 +138,62 @@ private final class ProcessesView: NSView {
     func setProcesses(_ procs: [TopProcess], format: (Double) -> String) {
         for i in 0..<processCount {
             if i < procs.count {
-                nameLabels[i].stringValue  = procs[i].name
-                valueLabels[i].stringValue = format(procs[i].value)
-                iconViews[i].image         = iconForProcessName(procs[i].name)
+                let name = procs[i].name
+                let value = format(procs[i].value)
+                let icon = iconForProcess(procs[i])
+                if nameLabels[i].stringValue != name {
+                    nameLabels[i].stringValue = name
+                }
+                if valueLabels[i].stringValue != value {
+                    valueLabels[i].stringValue = value
+                }
+                if iconViews[i].image !== icon {
+                    iconViews[i].image = icon
+                }
             } else {
-                nameLabels[i].stringValue  = ""
-                valueLabels[i].stringValue = ""
-                iconViews[i].image         = nil
+                if !nameLabels[i].stringValue.isEmpty {
+                    nameLabels[i].stringValue = ""
+                }
+                if !valueLabels[i].stringValue.isEmpty {
+                    valueLabels[i].stringValue = ""
+                }
+                if iconViews[i].image != nil {
+                    iconViews[i].image = nil
+                }
             }
         }
     }
 
-    private func iconForProcessName(_ name: String) -> NSImage? {
-        NSWorkspace.shared.runningApplications
-            .first { $0.localizedName == name || $0.executableURL?.lastPathComponent == name }
+    private func iconForProcess(_ process: TopProcess) -> NSImage? {
+        if process.pid > 0 {
+            if let cached = iconCacheByPID[process.pid] { return cached }
+            if let icon = NSRunningApplication(processIdentifier: pid_t(process.pid))?.icon {
+                iconCacheByPID[process.pid] = icon
+                return icon
+            }
+        }
+
+        if let cached = iconCacheByName[process.name] { return cached }
+        let icon = NSWorkspace.shared.runningApplications
+            .first { $0.localizedName == process.name || $0.executableURL?.lastPathComponent == process.name }
             .flatMap { $0.icon }
+        if let icon { iconCacheByName[process.name] = icon }
+        return icon
     }
 }
 
 // MARK: - Memory formatting (matching Stats' Units)
 
-private func fmtMemory(_ bytes: UInt64) -> String {
+private let memoryFormatter: ByteCountFormatter = {
     let fmt = ByteCountFormatter()
-    fmt.countStyle = .memory; fmt.includesUnit = true; fmt.isAdaptive = true
-    var s = fmt.string(fromByteCount: Int64(bytes))
+    fmt.countStyle = .memory
+    fmt.includesUnit = true
+    fmt.isAdaptive = true
+    return fmt
+}()
+
+private func fmtMemory(_ bytes: UInt64) -> String {
+    var s = memoryFormatter.string(fromByteCount: Int64(bytes))
     if let idx = s.lastIndex(of: ",") { s.replaceSubrange(idx...idx, with: ".") }
     return s
 }
@@ -366,7 +400,7 @@ final class CPUPopupView: NSStackView {
         return view
     }
 
-    func update(_ d: CPUDetail, processes: [TopProcess]) {
+    func update(_ d: CPUDetail, processes: [TopProcess], syncHistory: Bool = false) {
         systemField.stringValue = "\(Int((d.system * 100).rounded()))%"
         userField.stringValue   = "\(Int((d.user   * 100).rounded()))%"
         idleField.stringValue   = "\(Int((d.idle   * 100).rounded()))%"
@@ -379,7 +413,11 @@ final class CPUPopupView: NSStackView {
         circle.setNonActiveSegmentColor(idleColor)
         circle.setValue(d.total)
 
-        lineChart.addValue(d.total)
+        if syncHistory {
+            lineChart.setValues(d.history)
+        } else {
+            lineChart.addValue(d.total)
+        }
 
         if !d.usagePerCore.isEmpty {
             let vals = d.usagePerCore.enumerated().map { idx, value in
@@ -533,7 +571,7 @@ final class RAMPopupView: NSStackView {
         return view
     }
 
-    func update(_ d: RAMDetail, processes: [TopProcess]) {
+    func update(_ d: RAMDetail, processes: [TopProcess], syncHistory: Bool = false) {
         let used = d.appBytes + d.wiredBytes + d.compressedBytes
         usedField.stringValue  = fmtMemory(used)
         appField.stringValue   = fmtMemory(d.appBytes)
@@ -552,7 +590,11 @@ final class RAMPopupView: NSStackView {
 
         level.setActiveSegment(d.pressureLevel)
 
-        lineChart.addValue(d.total)
+        if syncHistory {
+            lineChart.setValues(d.history)
+        } else {
+            lineChart.addValue(d.total)
+        }
 
         processesView.setProcesses(processes) { v in fmtMemory(UInt64(v)) }
     }
@@ -693,20 +735,32 @@ final class GPUPopupView: NSStackView {
         }
     }
 
-    func update(_ d: GPUDetail) {
+    func update(_ d: GPUDetail, syncHistory: Bool = false) {
         modelLabel.stringValue = d.model
 
         gpuCircle.setValue(d.total)
         gpuCircle.setText("\(Int((d.total * 100).rounded()))%")
-        gpuChart.addValue(d.total)
+        if syncHistory {
+            gpuChart.setValues(d.history)
+        } else {
+            gpuChart.addValue(d.total)
+        }
 
         renderCircle.setValue(d.render)
         renderCircle.setText("\(Int((d.render * 100).rounded()))%")
-        renderChart.addValue(d.render)
+        if syncHistory {
+            renderChart.setValues(d.renderHistory)
+        } else {
+            renderChart.addValue(d.render)
+        }
 
         tilerCircle.setValue(d.tiler)
         tilerCircle.setText("\(Int((d.tiler * 100).rounded()))%")
-        tilerChart.addValue(d.tiler)
+        if syncHistory {
+            tilerChart.setValues(d.tilerHistory)
+        } else {
+            tilerChart.addValue(d.tiler)
+        }
     }
 }
 
@@ -955,22 +1009,28 @@ final class NetPopupView: NSStackView {
         let downTopW   = downValueW + downUnitW
         let halfW      = popupWidth / 2
 
-        uploadView?.setFrameSize(NSSize(width: upTopW, height: uploadView!.frame.height))
-        uploadView?.setFrameOrigin(NSPoint(x: (halfW - upTopW)/2, y: uploadView!.frame.origin.y))
-        uploadValueField?.setFrameSize(NSSize(width: upValueW, height: 30)); uploadValueField?.stringValue = up.0
-        uploadUnitField?.setFrameSize(NSSize(width: upUnitW, height: 15))
-        uploadUnitField?.setFrameOrigin(NSPoint(x: upValueW, y: uploadUnitField!.frame.origin.y))
-        uploadUnitField?.stringValue = up.1
+        if let uploadView, let uploadValueField, let uploadUnitField {
+            uploadView.setFrameSize(NSSize(width: upTopW, height: uploadView.frame.height))
+            uploadView.setFrameOrigin(NSPoint(x: (halfW - upTopW)/2, y: uploadView.frame.origin.y))
+            uploadValueField.setFrameSize(NSSize(width: upValueW, height: 30))
+            uploadValueField.stringValue = up.0
+            uploadUnitField.setFrameSize(NSSize(width: upUnitW, height: 15))
+            uploadUnitField.setFrameOrigin(NSPoint(x: upValueW, y: uploadUnitField.frame.origin.y))
+            uploadUnitField.stringValue = up.1
+        }
 
-        downloadView?.setFrameSize(NSSize(width: downTopW, height: downloadView!.frame.height))
-        downloadView?.setFrameOrigin(NSPoint(x: (halfW - downTopW)/2, y: downloadView!.frame.origin.y))
-        downloadValueField?.setFrameSize(NSSize(width: downValueW, height: 30)); downloadValueField?.stringValue = down.0
-        downloadUnitField?.setFrameSize(NSSize(width: downUnitW, height: 15))
-        downloadUnitField?.setFrameOrigin(NSPoint(x: downValueW, y: downloadUnitField!.frame.origin.y))
-        downloadUnitField?.stringValue = down.1
+        if let downloadView, let downloadValueField, let downloadUnitField {
+            downloadView.setFrameSize(NSSize(width: downTopW, height: downloadView.frame.height))
+            downloadView.setFrameOrigin(NSPoint(x: (halfW - downTopW)/2, y: downloadView.frame.origin.y))
+            downloadValueField.setFrameSize(NSSize(width: downValueW, height: 30))
+            downloadValueField.stringValue = down.0
+            downloadUnitField.setFrameSize(NSSize(width: downUnitW, height: 15))
+            downloadUnitField.setFrameOrigin(NSPoint(x: downValueW, y: downloadUnitField.frame.origin.y))
+            downloadUnitField.stringValue = down.1
+        }
     }
 
-    func update(_ d: NetDetail) {
+    func update(_ d: NetDetail, syncHistory: Bool = false) {
         setSpeedFields(upload: d.upload, download: d.download)
         totalUpField.stringValue   = fmtMemory(d.totalUp)
         totalDownField.stringValue = fmtMemory(d.totalDown)
@@ -984,6 +1044,10 @@ final class NetPopupView: NSStackView {
         localIPField.stringValue  = d.localIP.isEmpty    ? "Unknown" : d.localIP
         publicIPField.stringValue = d.publicIP ?? "Fetching…"
 
-        usageChart.addValue(upload: d.upload, download: d.download)
+        if syncHistory {
+            usageChart.setValues(d.history)
+        } else {
+            usageChart.addValue(upload: d.upload, download: d.download)
+        }
     }
 }

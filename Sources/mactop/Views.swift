@@ -6,7 +6,13 @@ import AppKit
 
 final class MiniView: NSView {
     let label: String
-    var value: Double = 0 { didSet { needsDisplay = true } }
+    var value: Double = 0 {
+        didSet {
+            if Int((value * 100).rounded()) != Int((oldValue * 100).rounded()) {
+                needsDisplay = true
+            }
+        }
+    }
 
     init(label: String) {
         self.label = label
@@ -42,8 +48,8 @@ final class MiniView: NSView {
 // Dots are colored when traffic ≥ 1024 B/s, labelColor otherwise.
 
 final class SpeedView: NSView {
-    var upload: Int64 = 0   { didSet { needsDisplay = true } }
-    var download: Int64 = 0 { didSet { needsDisplay = true } }
+    var upload: Int64 = 0   { didSet { if upload != oldValue { needsDisplay = true } } }
+    var download: Int64 = 0 { didSet { if download != oldValue { needsDisplay = true } } }
 
     override init(frame: NSRect) { super.init(frame: frame) }
     required init?(coder: NSCoder) { fatalError() }

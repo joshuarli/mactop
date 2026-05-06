@@ -3,6 +3,64 @@ import Foundation
 import IOKit
 import SystemConfiguration
 
+private struct ScalarHistory {
+    private var values: [Float]
+    private var nextIndex = 0
+    private var isFull = false
+
+    init(capacity: Int) {
+        values = Array(repeating: 0, count: max(capacity, 1))
+    }
+
+    mutating func append(_ value: Double) {
+        values[nextIndex] = Float(value)
+        nextIndex = (nextIndex + 1) % values.count
+        if nextIndex == 0 { isFull = true }
+    }
+
+    var orderedValues: [Double] {
+        let ordered: [Float]
+        if isFull {
+            ordered = Array(values[nextIndex..<values.count] + values[0..<nextIndex])
+        } else {
+            ordered = Array(values[0..<nextIndex])
+        }
+        return ordered.map(Double.init)
+    }
+}
+
+private struct PairHistory {
+    private var upValues: [Float]
+    private var downValues: [Float]
+    private var nextIndex = 0
+    private var isFull = false
+
+    init(capacity: Int) {
+        upValues = Array(repeating: 0, count: max(capacity, 1))
+        downValues = Array(repeating: 0, count: max(capacity, 1))
+    }
+
+    mutating func append(up: Double, down: Double) {
+        upValues[nextIndex] = Float(up)
+        downValues[nextIndex] = Float(down)
+        nextIndex = (nextIndex + 1) % upValues.count
+        if nextIndex == 0 { isFull = true }
+    }
+
+    var orderedValues: [(up: Double, down: Double)] {
+        let upOrdered: [Float]
+        let downOrdered: [Float]
+        if isFull {
+            upOrdered = Array(upValues[nextIndex..<upValues.count] + upValues[0..<nextIndex])
+            downOrdered = Array(downValues[nextIndex..<downValues.count] + downValues[0..<nextIndex])
+        } else {
+            upOrdered = Array(upValues[0..<nextIndex])
+            downOrdered = Array(downValues[0..<nextIndex])
+        }
+        return zip(upOrdered, downOrdered).map { (up: Double($0), down: Double($1)) }
+    }
+}
+
 // MARK: - CPU
 
 enum CPUCoreKind {
@@ -28,8 +86,17 @@ struct CPUDetail {
 final class CPUReader {
     private struct Tick { var user, sys, idle, nice: Double }
     private var prev: [Tick] = []
-    private var history: [Double] = []
+    private var history = ScalarHistory(capacity: 180)
     private let coreKinds = CPUReader.readCoreKinds()
+    private let uptimeFormatter: DateComponentsFormatter = {
+        let form = DateComponentsFormatter()
+        form.maximumUnitCount = 2
+        form.unitsStyle = .full
+        form.allowedUnits = [.day, .hour, .minute]
+        return form
+    }()
+    private var cachedUptimeMinute = -1
+    private var cachedUptime = "Unknown"
 
     func read() -> CPUDetail {
         var info: processor_info_array_t?
@@ -41,7 +108,7 @@ final class CPUReader {
               let info else {
             return CPUDetail(total: 0, system: 0, user: 0, idle: 1, usagePerCore: [],
                              coreKinds: coreKinds,
-                             loadAvg1: 0, loadAvg5: 0, loadAvg15: 0, uptime: uptimeString(), history: history)
+                             loadAvg1: 0, loadAvg5: 0, loadAvg15: 0, uptime: uptimeString(), history: history.orderedValues)
         }
         defer {
             vm_deallocate(mach_task_self_,
@@ -92,7 +159,6 @@ final class CPUReader {
 
         let total = min(1, max(0, totalUsage))
         history.append(total)
-        if history.count > 180 { history.removeFirst() }
 
         var loadAvgRaw = [Double](repeating: 0, count: 3)
         getloadavg(&loadAvgRaw, 3)
@@ -108,21 +174,25 @@ final class CPUReader {
             loadAvg5: loadAvgRaw[1],
             loadAvg15: loadAvgRaw[2],
             uptime: uptimeString(),
-            history: history
+            history: history.orderedValues
         )
     }
 
     private func uptimeString() -> String {
+        let elapsed = Int(Date().timeIntervalSince(Self.bootDate))
+        let minute = elapsed / 60
+        guard minute != cachedUptimeMinute else { return cachedUptime }
+        cachedUptimeMinute = minute
+        cachedUptime = uptimeFormatter.string(from: TimeInterval(elapsed)) ?? "Unknown"
+        return cachedUptime
+    }
+
+    private static let bootDate: Date = {
         var bootTime = timeval()
         var size = MemoryLayout<timeval>.size
         sysctlbyname("kern.boottime", &bootTime, &size, nil, 0)
-        let bootDate = Date(timeIntervalSince1970: Double(bootTime.tv_sec))
-        let form = DateComponentsFormatter()
-        form.maximumUnitCount = 2
-        form.unitsStyle = .full
-        form.allowedUnits = [.day, .hour, .minute]
-        return form.string(from: bootDate, to: Date()) ?? "Unknown"
-    }
+        return Date(timeIntervalSince1970: Double(bootTime.tv_sec))
+    }()
 
     private static func readCoreKinds() -> [CPUCoreKind] {
         var iterator: io_iterator_t = 0
@@ -200,7 +270,7 @@ final class RAMReader {
         sysctlbyname("hw.memsize", &n, &size, nil, 0)
         return n
     }()
-    private var history: [Double] = []
+    private var history = ScalarHistory(capacity: 180)
 
     func read() -> RAMDetail {
         var stats = vm_statistics64()
@@ -213,7 +283,7 @@ final class RAMReader {
             }
         }) == KERN_SUCCESS else {
             return RAMDetail(total: 0, appBytes: 0, wiredBytes: 0, compressedBytes: 0,
-                             freeBytes: 0, swapBytes: 0, totalBytes: totalBytes, pressureLevel: 0, history: history)
+                             freeBytes: 0, swapBytes: 0, totalBytes: totalBytes, pressureLevel: 0, history: history.orderedValues)
         }
 
         let page = UInt64(vm_page_size)
@@ -226,7 +296,9 @@ final class RAMReader {
         let external    = UInt64(stats.external_page_count)   * page
 
         // Stats' formula: used excludes purgeable (reclaimable) and external (file-backed) pages
-        let used = active + inactive + speculative + wired + compressed - purgeable - external
+        let rawUsed = active + inactive + speculative + wired + compressed
+        let reclaimable = purgeable + external
+        let used = rawUsed > reclaimable ? rawUsed - reclaimable : 0
         let app  = used > wired + compressed ? used - wired - compressed : 0
         let free = totalBytes > used ? totalBytes - used : 0
 
@@ -246,7 +318,6 @@ final class RAMReader {
 
         let fraction = totalBytes > 0 ? min(1, Double(used) / Double(totalBytes)) : 0
         history.append(fraction)
-        if history.count > 180 { history.removeFirst() }
 
         return RAMDetail(
             total: fraction,
@@ -257,7 +328,7 @@ final class RAMReader {
             swapBytes: swap.xsu_used,
             totalBytes: totalBytes,
             pressureLevel: pressureLevel,
-            history: history
+            history: history.orderedValues
         )
     }
 }
@@ -270,10 +341,14 @@ struct GPUDetail {
     var tiler: Double
     var model: String
     var history: [Double]
+    var renderHistory: [Double]
+    var tilerHistory: [Double]
 }
 
 final class GPUReader {
-    private var history: [Double] = []
+    private var history = ScalarHistory(capacity: 120)
+    private var renderHistory = ScalarHistory(capacity: 120)
+    private var tilerHistory = ScalarHistory(capacity: 120)
     // EMA smoothing matches Stats' visually calm GPU graph
     private var emaTotal:  Double = 0
     private var emaRender: Double = 0
@@ -295,7 +370,7 @@ final class GPUReader {
             kIOMainPortDefault,
             IOServiceMatching("IOAccelerator"),
             &iterator
-        ) == KERN_SUCCESS else { return GPUDetail(total: emaTotal, render: emaRender, tiler: emaTiler, model: Self.modelName, history: history) }
+        ) == KERN_SUCCESS else { return detail() }
         defer { IOObjectRelease(iterator) }
 
         while true {
@@ -321,11 +396,24 @@ final class GPUReader {
             emaTiler  = alpha * rawTiler  + (1 - alpha) * emaTiler
 
             history.append(emaTotal)
-            if history.count > 180 { history.removeFirst() }
+            renderHistory.append(emaRender)
+            tilerHistory.append(emaTiler)
 
-            return GPUDetail(total: emaTotal, render: emaRender, tiler: emaTiler, model: Self.modelName, history: history)
+            return detail()
         }
-        return GPUDetail(total: emaTotal, render: emaRender, tiler: emaTiler, model: Self.modelName, history: history)
+        return detail()
+    }
+
+    private func detail() -> GPUDetail {
+        GPUDetail(
+            total: emaTotal,
+            render: emaRender,
+            tiler: emaTiler,
+            model: Self.modelName,
+            history: history.orderedValues,
+            renderHistory: renderHistory.orderedValues,
+            tilerHistory: tilerHistory.orderedValues
+        )
     }
 }
 
@@ -353,7 +441,8 @@ final class NetReader {
     private var cumulativeUp: UInt64 = 0
     private var cumulativeDown: UInt64 = 0
     private var lastTime = Date()
-    private var history: [(up: Double, down: Double)] = []
+    private var history = PairHistory(capacity: 180)
+    private let dynamicStore = SCDynamicStoreCreate(nil, "mactop" as CFString, nil, nil)
 
     // Interface detail cache — refreshed at most every 15 s
     private var detailsLastRead = Date.distantPast
@@ -365,6 +454,7 @@ final class NetReader {
     // Public IP — fetched async, at most every 300 s
     private var publicIPLastFetch = Date.distantPast
     private var cachedPublicIP: String? = nil
+    private let publicIPLock = NSLock()
 
     func read() -> NetDetail {
         let preferredIface = primaryInterfaceName()
@@ -372,7 +462,7 @@ final class NetReader {
         guard getifaddrs(&ifap) == 0, let head = ifap else {
             return NetDetail(upload: 0, download: 0, totalUp: cumulativeUp, totalDown: cumulativeDown,
                              interfaceName: "", displayName: "", macAddress: "", ssid: nil,
-                             localIP: "", publicIP: nil, transmitRate: 0, isUp: false, history: history)
+                             localIP: "", publicIP: lockedPublicIP(), transmitRate: 0, isUp: false, history: history.orderedValues)
         }
         defer { freeifaddrs(head) }
 
@@ -385,6 +475,8 @@ final class NetReader {
         var transmitFromLink: Double = 0
         var linkDetails: [String: (isUp: Bool, mac: String, transmitRate: Double)] = [:]
         var ipByInterface: [String: String] = [:]
+        var firstLinkInterface = ""
+        var firstIPInterface = ""
 
         var cursor: UnsafeMutablePointer<ifaddrs>? = head
         while let iface = cursor {
@@ -392,13 +484,14 @@ final class NetReader {
             let name = String(cString: iface.pointee.ifa_name)
             guard name.hasPrefix("en") else { continue }
 
-            if iface.pointee.ifa_addr?.pointee.sa_family == UInt8(AF_LINK),
+            if let addr = iface.pointee.ifa_addr,
+               addr.pointee.sa_family == UInt8(AF_LINK),
                let raw = iface.pointee.ifa_data {
                 let ifData = raw.assumingMemoryBound(to: if_data.self).pointee
                 totalUp   += UInt64(ifData.ifi_obytes)
                 totalDown += UInt64(ifData.ifi_ibytes)
                 var mac = ""
-                iface.pointee.ifa_addr!.withMemoryRebound(to: sockaddr_dl.self, capacity: 1) { sdl in
+                addr.withMemoryRebound(to: sockaddr_dl.self, capacity: 1) { sdl in
                     let alen = Int(sdl.pointee.sdl_alen)
                     let nlen = Int(sdl.pointee.sdl_nlen)
                     if alen == 6 {
@@ -412,28 +505,31 @@ final class NetReader {
                     mac: mac,
                     transmitRate: Double(ifData.ifi_baudrate) / 1_000_000
                 )
+                if firstLinkInterface.isEmpty { firstLinkInterface = name }
             }
 
-            if iface.pointee.ifa_addr?.pointee.sa_family == UInt8(AF_INET),
+            if let addr = iface.pointee.ifa_addr,
+               addr.pointee.sa_family == UInt8(AF_INET),
                ipByInterface[name] == nil {
-                var addr = iface.pointee.ifa_addr!.pointee
+                var rawAddr = addr.pointee
                 var buf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
-                withUnsafeMutablePointer(to: &addr) {
+                withUnsafeMutablePointer(to: &rawAddr) {
                     $0.withMemoryRebound(to: sockaddr_in.self, capacity: 1) {
                         var inAddr = $0.pointee.sin_addr
                         inet_ntop(AF_INET, &inAddr, &buf, socklen_t(INET_ADDRSTRLEN))
                     }
                 }
                 ipByInterface[name] = String(cString: buf)
+                if firstIPInterface.isEmpty { firstIPInterface = name }
             }
         }
 
         if let preferredIface, linkDetails[preferredIface] != nil {
             primaryIface = preferredIface
-        } else if let active = linkDetails.keys.sorted().first(where: { ipByInterface[$0] != nil }) {
-            primaryIface = active
-        } else if let first = linkDetails.keys.sorted().first {
-            primaryIface = first
+        } else if !firstIPInterface.isEmpty {
+            primaryIface = firstIPInterface
+        } else {
+            primaryIface = firstLinkInterface
         }
 
         if let link = linkDetails[primaryIface] {
@@ -461,8 +557,7 @@ final class NetReader {
         prevDown = totalDown
         lastTime = now
 
-        history.append((up: upRate, down: downRate))
-        if history.count > 180 { history.removeFirst() }
+        history.append(up: upRate, down: downRate)
 
         // Refresh slow/cached details
         if !macFromLink.isEmpty { cachedMAC = macFromLink }
@@ -480,16 +575,16 @@ final class NetReader {
             macAddress: cachedMAC,
             ssid: cachedSSID,
             localIP: localIP,
-            publicIP: cachedPublicIP,
+            publicIP: lockedPublicIP(),
             transmitRate: cachedTransmitRate,
             isUp: isUp,
-            history: history
+            history: history.orderedValues
         )
     }
 
     private func primaryInterfaceName() -> String? {
-        guard let store = SCDynamicStoreCreate(nil, "mactop" as CFString, nil, nil),
-              let global = SCDynamicStoreCopyValue(store, "State:/Network/Global/IPv4" as CFString) as? [String: Any],
+        guard let dynamicStore,
+              let global = SCDynamicStoreCopyValue(dynamicStore, "State:/Network/Global/IPv4" as CFString) as? [String: Any],
               let iface = global["PrimaryInterface"] as? String,
               !iface.isEmpty else { return nil }
         return iface
@@ -508,7 +603,8 @@ final class NetReader {
             let ifType = SCNetworkInterfaceGetInterfaceType(scIface) as String?
             if ifType == (kSCNetworkInterfaceTypeIEEE80211 as String) {
                 let key = "State:/Network/Interface/\(ifName)/AirPort" as CFString
-                if let info = SCDynamicStoreCopyValue(nil, key) as? [String: Any] {
+                if let dynamicStore,
+                   let info = SCDynamicStoreCopyValue(dynamicStore, key) as? [String: Any] {
                     cachedSSID = info["SSID_STR"] as? String
                 }
             } else {
@@ -520,12 +616,23 @@ final class NetReader {
 
     // Fetches public IPv4 from ipify — throttled to 300 s, non-blocking
     private func refreshPublicIP() {
-        guard Date().timeIntervalSince(publicIPLastFetch) >= 300 else { return }
+        guard Date().timeIntervalSince(publicIPLastFetch) >= 300,
+              let publicIPURL = Self.publicIPURL else { return }
         publicIPLastFetch = Date()
-        URLSession.shared.dataTask(with: URL(string: "https://api.ipify.org")!) { [weak self] data, _, _ in
+        URLSession.shared.dataTask(with: publicIPURL) { [weak self] data, _, _ in
             guard let self, let data,
                   let ip = String(data: data, encoding: .utf8) else { return }
+            self.publicIPLock.lock()
             self.cachedPublicIP = ip.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.publicIPLock.unlock()
         }.resume()
     }
+
+    private func lockedPublicIP() -> String? {
+        publicIPLock.lock()
+        defer { publicIPLock.unlock() }
+        return cachedPublicIP
+    }
+
+    private static let publicIPURL = URL(string: "https://api.ipify.org")
 }

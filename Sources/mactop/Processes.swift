@@ -1,60 +1,76 @@
-import AppKit
 import Darwin
 import Foundation
 
 // MARK: - Process data
 
 struct TopProcess {
+    var pid: Int32
     var name: String
     var value: Double   // CPU: percent (0–100); RAM: bytes
+
+    init(pid: Int32 = 0, name: String, value: Double) {
+        self.pid = pid
+        self.name = name
+        self.value = value
+    }
 }
 
 // MARK: - CPU process reader
-// Matches Stats exactly: runs `ps -A -c -o pid,pcpu,comm -r` and parses pcpu,
-// which is the kernel's own decaying-average CPU% — no delta math needed.
+// Uses proc_pid_rusage in-process. ri_user_time/ri_system_time are nanoseconds,
+// so delta CPU time divided by wall time gives process CPU%, including >100%
+// for multithreaded processes.
 
 final class CPUProcessReader {
+    private var previous: [Int32: (time: UInt64, start: UInt64)] = [:]
+    private var previousTime: TimeInterval?
+    private var nameCache: [Int32: String] = [:]
+
     func read(count n: Int = 8) -> [TopProcess] {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/bin/ps")
-        task.arguments     = ["-A", "-c", "-o", "pid,pcpu,comm", "-r"]
-        let outPipe = Pipe()
-        task.standardOutput = outPipe
-        task.standardError  = Pipe()
-        guard (try? task.run()) != nil else { return [] }
-        let data   = outPipe.fileHandleForReading.readDataToEndOfFile()
-        task.waitUntilExit()
-        guard let output = String(data: data, encoding: .utf8) else { return [] }
+        let now = ProcessInfo.processInfo.systemUptime
+        let pidCount = proc_listallpids(nil, 0)
+        guard pidCount > 0 else { return [] }
 
-        var results: [TopProcess] = []
-        var headerSeen = false
+        var pids = [Int32](repeating: 0, count: Int(pidCount) + 16)
+        let bytes = proc_listallpids(&pids, Int32(pids.count) * Int32(MemoryLayout<Int32>.size))
+        let found = max(0, Int(bytes) / MemoryLayout<Int32>.size)
 
-        for line in output.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard headerSeen else { headerSeen = true; continue }
-            let s = String(line).trimmingCharacters(in: .whitespaces)
-            var rest = s[s.startIndex...]
+        var current: [Int32: (time: UInt64, start: UInt64)] = [:]
+        current.reserveCapacity(found)
+        var top: [TopProcess] = []
+        let elapsed = previousTime.map { now - $0 } ?? 0
 
-            guard let pidEnd = rest.firstIndex(of: " "),
-                  let pid = Int32(rest[..<pidEnd]) else { continue }
-            rest = rest[pidEnd...].drop(while: { $0 == " " })
+        for pid in pids.prefix(found) where pid > 0 {
+            guard let rusage = processRusage(pid: pid) else { continue }
+            let totalTime = rusage.ri_user_time + rusage.ri_system_time
+            current[pid] = (time: totalTime, start: rusage.ri_proc_start_abstime)
 
-            guard let pctEnd = rest.firstIndex(of: " ") else { continue }
-            let pctStr = String(rest[..<pctEnd]).replacingOccurrences(of: ",", with: ".")
-            guard let pct = Double(pctStr) else { continue }
-            rest = rest[pctEnd...].drop(while: { $0 == " " })
+            guard elapsed > 0,
+                  let old = previous[pid],
+                  old.start == rusage.ri_proc_start_abstime,
+                  totalTime >= old.time else { continue }
+            let pct = (Double(totalTime - old.time) / 1_000_000_000.0 / elapsed) * 100.0
+            guard pct > 0 else { continue }
 
-            let comm = String(rest)
-            var name = comm
-            if let app = NSRunningApplication(processIdentifier: pid_t(pid)),
-               let n = app.localizedName {
-                name = n
+            insertTop(TopProcess(pid: pid, name: processName(pid: pid), value: pct), into: &top, count: n) {
+                $0.value > $1.value
             }
-
-            results.append(TopProcess(name: name, value: pct))
-            if results.count >= n { break }
         }
 
-        return results
+        previous = current
+        nameCache = nameCache.filter { current[$0.key] != nil }
+        previousTime = now
+        return top
+    }
+
+    private func processName(pid: Int32) -> String {
+        if let cached = nameCache[pid] { return cached }
+
+        var nameBuf = [CChar](repeating: 0, count: 1024)
+        proc_name(pid, &nameBuf, UInt32(nameBuf.count))
+        let rawName = String(cString: nameBuf)
+        let name = rawName.isEmpty ? "pid \(pid)" : rawName
+        nameCache[pid] = name
+        return name
     }
 }
 
@@ -109,42 +125,69 @@ private struct ProcTaskInfo {
 
 private let PROC_PIDTASKINFO: Int32 = 4
 
+private func processRusage(pid: Int32) -> RusageInfoV2? {
+    var ru = RusageInfoV2()
+    let ret = withUnsafeMutablePointer(to: &ru) { ptr in
+        ptr.withMemoryRebound(to: rusage_info_t?.self, capacity: 20) { riPtr in
+            proc_pid_rusage(pid, 2, riPtr)
+        }
+    }
+    return ret == 0 ? ru : nil
+}
+
+private func insertTop<T>(_ value: T, into top: inout [T], count: Int, by areInDescendingOrder: (T, T) -> Bool) {
+    guard count > 0 else { return }
+    top.append(value)
+    top.sort(by: areInDescendingOrder)
+    if top.count > count { top.removeLast() }
+}
+
 final class RAMProcessReader {
+    private var nameCache: [Int32: String] = [:]
+
     func read(count n: Int = 8) -> [TopProcess] {
         let pidCount = proc_listallpids(nil, 0)
         guard pidCount > 0 else { return [] }
         var pids = [Int32](repeating: 0, count: Int(pidCount) + 16)
-        proc_listallpids(&pids, Int32(pids.count) * Int32(MemoryLayout<Int32>.size))
+        let bytes = proc_listallpids(&pids, Int32(pids.count) * Int32(MemoryLayout<Int32>.size))
+        let found = max(0, Int(bytes) / MemoryLayout<Int32>.size)
+        var top: [TopProcess] = []
+        var activePIDs = Set<Int32>()
 
-        return pids.filter { $0 > 0 }.compactMap { pid -> (name: String, bytes: UInt64)? in
+        for pid in pids.prefix(found) where pid > 0 {
+            activePIDs.insert(pid)
             // Try phys_footprint first (matches Activity Monitor); falls back for root procs
             // proc_pid_rusage writes the struct AT buffer (not to *buffer), so we rebind
             // our struct pointer to rusage_info_t? to match the Swift import signature.
-            var ru = RusageInfoV2()
-            let rusageRet = withUnsafeMutablePointer(to: &ru) { ptr in
-                ptr.withMemoryRebound(to: rusage_info_t?.self, capacity: 20) { riPtr in
-                    proc_pid_rusage(pid, 2, riPtr)
-                }
-            }
             let mem: UInt64
-            if rusageRet == 0, ru.ri_phys_footprint > 0 {
+            if let ru = processRusage(pid: pid), ru.ri_phys_footprint > 0 {
                 mem = ru.ri_phys_footprint
             } else {
                 var info = ProcTaskInfo()
                 guard proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &info,
                                    Int32(MemoryLayout<ProcTaskInfo>.size)) > 0,
-                      info.pti_resident_size > 0 else { return nil }
+                      info.pti_resident_size > 0 else { continue }
                 mem = info.pti_resident_size
             }
-            var nameBuf = [CChar](repeating: 0, count: 1024)
-            proc_name(pid, &nameBuf, UInt32(nameBuf.count))
-            let rawName = String(cString: nameBuf)
-            let name = rawName.isEmpty ? "pid \(pid)" : rawName
-            return (name: name, bytes: mem)
+
+            insertTop(TopProcess(pid: pid, name: processName(pid: pid), value: Double(mem)), into: &top, count: n) {
+                $0.value > $1.value
+            }
         }
-        .sorted { $0.bytes > $1.bytes }
-        .prefix(n)
-        .map { TopProcess(name: $0.name, value: Double($0.bytes)) }
+
+        nameCache = nameCache.filter { activePIDs.contains($0.key) }
+        return top
+    }
+
+    private func processName(pid: Int32) -> String {
+        if let cached = nameCache[pid] { return cached }
+
+        var nameBuf = [CChar](repeating: 0, count: 1024)
+        proc_name(pid, &nameBuf, UInt32(nameBuf.count))
+        let rawName = String(cString: nameBuf)
+        let name = rawName.isEmpty ? "pid \(pid)" : rawName
+        nameCache[pid] = name
+        return name
     }
 }
 
@@ -338,19 +381,21 @@ final class NetProcessReader {
         defer { prev = current; prevTime = now }
         guard dt > 0, !prev.isEmpty else { return [] }
 
-        return current
-            .compactMap { pid, cur -> (pid: Int32, rate: Double)? in
-                guard let p = prev[pid] else { return nil }
-                let deltaIn  = cur.in  >= p.in  ? cur.in  - p.in  : 0
-                let deltaOut = cur.out >= p.out ? cur.out - p.out : 0
-                let rate = Double(deltaIn + deltaOut) / dt
-                return rate > 0 ? (pid: pid, rate: rate) : nil
+        var top: [(pid: Int32, rate: Double)] = []
+        for (pid, cur) in current {
+            guard let p = prev[pid] else { continue }
+            let deltaIn  = cur.in  >= p.in  ? cur.in  - p.in  : 0
+            let deltaOut = cur.out >= p.out ? cur.out - p.out : 0
+            let rate = Double(deltaIn + deltaOut) / dt
+            guard rate > 0 else { continue }
+            insertTop((pid: pid, rate: rate), into: &top, count: n) {
+                $0.rate > $1.rate
             }
-            .sorted { $0.rate > $1.rate }
-            .prefix(n)
-            .compactMap { item in
-                let name = current[item.pid]?.name ?? ""
-                return name.isEmpty ? nil : TopProcess(name: name, value: item.rate)
-            }
+        }
+
+        return top.compactMap { item in
+            let name = current[item.pid]?.name ?? ""
+            return name.isEmpty ? nil : TopProcess(pid: item.pid, name: name, value: item.rate)
+        }
     }
 }
