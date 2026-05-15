@@ -94,16 +94,25 @@ Top-process readers are separate and visible-only. `AppDelegate` refreshes CPU, 
 
 ## Data Sources
 
-CPU totals use Mach `host_processor_info`. CPU top processes use a hybrid approach:
+CPU totals use Mach `host_processor_info`. CPU top processes use one of two paths, selected once at startup by probing `proc_pid_rusage` on PID 1 (root-owned launchd):
 
-- **Same-user processes**: `proc_pid_rusage` (`libproc`) gives nanosecond-precision cumulative user+system time. Diffing two readings over wall time produces true instantaneous CPU%.
-- **Cross-user processes** (e.g. `_windowserver`, `root` daemons): only `p_pctcpu` from `sysctl KERN_PROC_ALL` is accessible. This is the kernel's exponential-decay average (~5 s half-life), not an instantaneous measurement. `p_uticks`/`p_sticks` (the raw tick accumulators) and `proc_pidinfo(PROC_PIDTASKINFO)` are zeroed out by the kernel for non-root callers on modern macOS.
+**Native path** (succeeds only with `com.apple.system-task-ports.read` or setuid root):
+- Same-user processes: `proc_pid_rusage` nanosecond delta → true instantaneous CPU%.
+- Cross-user processes: `sysctl KERN_PROC_ALL` `p_pctcpu` decay average (best available natively).
 
-`/bin/ps` and `/usr/bin/top` can show instantaneous CPU for all processes because they are **setuid root** and hold the private entitlement `com.apple.system-task-ports.read`, which grants task-port access across user boundaries. Without setuid root or that entitlement (obtainable only from Apple), `p_pctcpu` is the ceiling for cross-user CPU accuracy.
+**PS path** (active in the common case — no special entitlement):
+- Runs `/bin/ps -Aceo pid,pcpu,comm -r`, which is setuid root and sees all processes.
+- Values are `p_pctcpu`-based (decay average) but consistent across all users.
+- Process names from `proc_name` fall back to the `comm` field from ps output.
 
-Self-signing `com.apple.system-task-ports.read` does not work: with SIP enabled the kernel validates private entitlements through `amfid` and silently ignores them on non-Apple-signed binaries. The only practical routes to instantaneous cross-user CPU are (a) SIP disabled (not shippable) or (b) a privileged `SMJobBless` helper running as root, which requires a paid Developer ID certificate and significant architectural work.
+**Why cross-user instantaneous CPU is unavailable without root:**
+`p_uticks`/`p_sticks` (raw statclock accumulators) and `proc_pidinfo(PROC_PIDTASKINFO)` are zeroed by the kernel for non-root callers on modern macOS. `/bin/ps` and `/usr/bin/top` are both setuid root and carry the private entitlement `com.apple.system-task-ports.read`. Self-signing that entitlement does not work: with SIP enabled, `amfid` ignores it on non-Apple-signed binaries. The only paths to instantaneous cross-user CPU are (a) SIP disabled (not shippable) or (b) a privileged `SMJobBless` helper (requires paid Developer ID, significant architectural work).
 
-RAM totals use Mach VM statistics and `sysctl`; RAM top processes use `libproc` APIs.
+RAM totals use Mach VM statistics and `sysctl`. RAM top processes use `proc_pid_rusage` → `ri_phys_footprint`, which matches Activity Monitor's per-process "Memory" column exactly.
+
+**Preferred behavior:** show individual processes — do not group or roll up children under a responsible parent. Stats has a `combinedProcesses` mode that calls `responsibility_get_pid_responsible_for_pid` and collapses related processes (e.g. Claude, codex) under their terminal/tty ancestor. That is explicitly not wanted here.
+
+**Known gap:** cross-user processes (WindowServer, root daemons) are absent from the RAM top list. `proc_pid_rusage` and `proc_pidinfo(PROC_PIDTASKINFO)` both return zero for non-root callers on modern macOS, so those processes are silently skipped. A `/usr/bin/top` subprocess fallback (analogous to the CPU ps path) could close this gap if it ever matters.
 
 GPU uses IOKit `IOAccelerator` performance statistics.
 

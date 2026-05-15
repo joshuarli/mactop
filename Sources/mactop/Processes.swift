@@ -16,20 +16,20 @@ struct TopProcess {
 }
 
 // MARK: - CPU process reader
-// Same-user processes: proc_pid_rusage ns delta → true instantaneous CPU%.
-// Cross-user processes (e.g. _windowserver): sysctl p_pctcpu, the only CPU signal
-// accessible without root on modern macOS. p_uticks/p_sticks and proc_pidinfo are
-// zeroed out for non-root callers; p_pctcpu (FSCALE=2048) is all we get.
+// Two paths selected once at init by probing proc_pid_rusage on PID 1 (root-owned launchd):
+//
+// Native path (com.apple.system-task-ports.read or setuid root):
+//   Same-user procs → proc_pid_rusage ns delta (true instantaneous %).
+//   Cross-user procs → sysctl p_pctcpu decay average (best available natively).
+//
+// PS path (no entitlement — the common case):
+//   Runs /bin/ps -Aceo pid,pcpu,comm -r (setuid root, so sees all processes).
+//   Returns p_pctcpu-based values for every process, consistent across users.
 
 // FSCALE on Darwin/macOS: 1 << FSHIFT where FSHIFT=11, so FSCALE=2048.
 private let kFScale: Double = 2048.0
 
-private struct KinfoSnapshot {
-    var pctcpu: UInt32
-    var pid: Int32
-}
-
-private func allKinfoProcs() -> [Int32: KinfoSnapshot] {
+private func allKinfoPctcpu() -> [Int32: UInt32] {
     var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
     var size = 0
     guard sysctl(&mib, 4, nil, &size, nil, 0) == 0, size > 0 else { return [:] }
@@ -39,24 +39,39 @@ private func allKinfoProcs() -> [Int32: KinfoSnapshot] {
     var actualSize = capacity * stride
     guard sysctl(&mib, 4, &buf, &actualSize, nil, 0) == 0 else { return [:] }
     let found = actualSize / stride
-    var result = [Int32: KinfoSnapshot]()
+    var result = [Int32: UInt32]()
     result.reserveCapacity(found)
     for p in buf.prefix(found) {
         let pid = p.kp_proc.p_pid
         guard pid > 0 else { continue }
-        result[pid] = KinfoSnapshot(pctcpu: UInt32(p.kp_proc.p_pctcpu), pid: pid)
+        result[pid] = UInt32(p.kp_proc.p_pctcpu)
     }
     return result
 }
 
 final class CPUProcessReader {
+    // Probe cross-user rusage access once. proc_pid_rusage on PID 1 (launchd, always
+    // root-owned) succeeds only with com.apple.system-task-ports.read or setuid root.
+    private let nativeCrossUser: Bool = {
+        var ru = RusageInfoV2()
+        return withUnsafeMutablePointer(to: &ru) { ptr in
+            ptr.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { riPtr in
+                proc_pid_rusage(1, 2, riPtr) == 0
+            }
+        }
+    }()
+
     private var previous: [Int32: (time: UInt64, start: UInt64)] = [:]
     private var previousTime: TimeInterval?
     private var nameCache: [Int32: String] = [:]
 
     func read(count n: Int = 8) -> [TopProcess] {
+        nativeCrossUser ? readNative(count: n) : readPS(count: n)
+    }
+
+    private func readNative(count n: Int) -> [TopProcess] {
         let now = ProcessInfo.processInfo.systemUptime
-        let kinfo = allKinfoProcs()
+        let kinfo = allKinfoPctcpu()
         guard !kinfo.isEmpty else { return [] }
 
         var current: [Int32: (time: UInt64, start: UInt64)] = [:]
@@ -69,16 +84,17 @@ final class CPUProcessReader {
                 let totalTime = rusage.ri_user_time + rusage.ri_system_time
                 current[pid] = (time: totalTime, start: rusage.ri_proc_start_abstime)
 
-                guard elapsed > 0,
-                      let old = previous[pid],
-                      old.start == rusage.ri_proc_start_abstime,
-                      totalTime > old.time else { continue }
-                let pct = Double(totalTime - old.time) / 1_000_000_000.0 / elapsed * 100.0
+                guard let old = previous[pid],
+                      let pct = cpuDelta(
+                          current: (time: totalTime, start: rusage.ri_proc_start_abstime),
+                          previous: old,
+                          elapsed: elapsed
+                      ) else { continue }
                 insertTop(TopProcess(pid: pid, name: processName(pid: pid), value: pct), into: &top, count: n) {
                     $0.value > $1.value
                 }
-            } else if let snap = kinfo[pid], snap.pctcpu > 0 {
-                let pct = Double(snap.pctcpu) / kFScale * 100.0
+            } else if let pctcpu = kinfo[pid], pctcpu > 0 {
+                let pct = Double(pctcpu) / kFScale * 100.0
                 insertTop(TopProcess(pid: pid, name: processName(pid: pid), value: pct), into: &top, count: n) {
                     $0.value > $1.value
                 }
@@ -91,11 +107,33 @@ final class CPUProcessReader {
         return top
     }
 
-    private func processName(pid: Int32) -> String {
+    private func readPS(count n: Int) -> [TopProcess] {
+        let task = Process()
+        task.launchPath = "/bin/ps"
+        task.arguments = ["-Aceo", "pid,pcpu,comm", "-r"]
+        let outPipe = Pipe()
+        task.standardOutput = outPipe
+        task.standardError = Pipe()
+        defer {
+            outPipe.fileHandleForReading.closeFile()
+            (task.standardError as? Pipe)?.fileHandleForReading.closeFile()
+        }
+        do { try task.run() } catch { return [] }
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+        guard let output = String(data: data, encoding: .utf8) else { return [] }
+        return parsePSOutput(output, count: n).map { entry in
+            TopProcess(pid: entry.pid, name: processName(pid: entry.pid, fallback: entry.comm), value: entry.pct)
+        }
+    }
+
+    private func processName(pid: Int32, fallback: String = "") -> String {
         if let cached = nameCache[pid] { return cached }
         let name = displayName(pid: pid)
-        nameCache[pid] = name
-        return name
+        // displayName returns "pid NNN" when proc_name yields nothing; prefer ps comm in that case
+        let resolved = name == "pid \(pid)" && !fallback.isEmpty ? fallback : name
+        nameCache[pid] = resolved
+        return resolved
     }
 }
 
@@ -160,11 +198,46 @@ private func processRusage(pid: Int32) -> RusageInfoV2? {
     return ret == 0 ? ru : nil
 }
 
-private func insertTop<T>(_ value: T, into top: inout [T], count: Int, by areInDescendingOrder: (T, T) -> Bool) {
+func insertTop<T>(_ value: T, into top: inout [T], count: Int, by areInDescendingOrder: (T, T) -> Bool) {
     guard count > 0 else { return }
     top.append(value)
     top.sort(by: areInDescendingOrder)
     if top.count > count { top.removeLast() }
+}
+
+// Returns CPU% for one process given two rusage snapshots, or nil if the delta is unusable
+// (elapsed zero, PID reused since last sample, or time went backwards).
+func cpuDelta(
+    current: (time: UInt64, start: UInt64),
+    previous: (time: UInt64, start: UInt64),
+    elapsed: TimeInterval
+) -> Double? {
+    guard elapsed > 0,
+          current.start == previous.start,
+          current.time > previous.time else { return nil }
+    return Double(current.time - previous.time) / 1_000_000_000.0 / elapsed * 100.0
+}
+
+// Parses /bin/ps -Aceo pid,pcpu,comm -r output into raw (pid, pct, comm) tuples.
+// Skips the header line, stops at the first 0% entry (output is sorted descending),
+// and handles comma decimal separators for non-English locales.
+func parsePSOutput(_ output: String, count: Int) -> [(pid: Int32, pct: Double, comm: String)] {
+    var results: [(pid: Int32, pct: Double, comm: String)] = []
+    var skipHeader = true
+    for line in output.split(separator: "\n", omittingEmptySubsequences: true) {
+        if skipHeader { skipHeader = false; continue }
+        let parts = line.trimmingCharacters(in: .whitespaces)
+                        .components(separatedBy: .whitespaces)
+                        .filter { !$0.isEmpty }
+        guard parts.count >= 3,
+              let pid = Int32(parts[0]),
+              let pct = Double(parts[1].replacingOccurrences(of: ",", with: "."))
+        else { continue }
+        guard pct > 0 else { break }
+        results.append((pid: pid, pct: pct, comm: parts[2...].joined(separator: " ")))
+        if results.count >= count { break }
+    }
+    return results
 }
 
 final class RAMProcessReader {

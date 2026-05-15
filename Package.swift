@@ -12,6 +12,10 @@ let package = Package(
                 .linkedFramework("IOKit"),
                 .linkedFramework("SystemConfiguration"),
             ]
-        )
+        ),
+        .testTarget(
+            name: "mactopTests",
+            dependencies: ["mactop"]
+        ),
     ]
 )
