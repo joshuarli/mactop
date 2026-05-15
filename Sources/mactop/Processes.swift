@@ -16,9 +16,38 @@ struct TopProcess {
 }
 
 // MARK: - CPU process reader
-// Uses proc_pid_rusage in-process. ri_user_time/ri_system_time are nanoseconds,
-// so delta CPU time divided by wall time gives process CPU%, including >100%
-// for multithreaded processes.
+// Same-user processes: proc_pid_rusage ns delta → true instantaneous CPU%.
+// Cross-user processes (e.g. _windowserver): sysctl p_pctcpu, the only CPU signal
+// accessible without root on modern macOS. p_uticks/p_sticks and proc_pidinfo are
+// zeroed out for non-root callers; p_pctcpu (FSCALE=2048) is all we get.
+
+// FSCALE on Darwin/macOS: 1 << FSHIFT where FSHIFT=11, so FSCALE=2048.
+private let kFScale: Double = 2048.0
+
+private struct KinfoSnapshot {
+    var pctcpu: UInt32
+    var pid: Int32
+}
+
+private func allKinfoProcs() -> [Int32: KinfoSnapshot] {
+    var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
+    var size = 0
+    guard sysctl(&mib, 4, nil, &size, nil, 0) == 0, size > 0 else { return [:] }
+    let stride = MemoryLayout<kinfo_proc>.stride
+    let capacity = size / stride + 4
+    var buf = [kinfo_proc](repeating: kinfo_proc(), count: capacity)
+    var actualSize = capacity * stride
+    guard sysctl(&mib, 4, &buf, &actualSize, nil, 0) == 0 else { return [:] }
+    let found = actualSize / stride
+    var result = [Int32: KinfoSnapshot]()
+    result.reserveCapacity(found)
+    for p in buf.prefix(found) {
+        let pid = p.kp_proc.p_pid
+        guard pid > 0 else { continue }
+        result[pid] = KinfoSnapshot(pctcpu: UInt32(p.kp_proc.p_pctcpu), pid: pid)
+    }
+    return result
+}
 
 final class CPUProcessReader {
     private var previous: [Int32: (time: UInt64, start: UInt64)] = [:]
@@ -27,44 +56,43 @@ final class CPUProcessReader {
 
     func read(count n: Int = 8) -> [TopProcess] {
         let now = ProcessInfo.processInfo.systemUptime
-        let pidCount = proc_listallpids(nil, 0)
-        guard pidCount > 0 else { return [] }
-
-        var pids = [Int32](repeating: 0, count: Int(pidCount) + 16)
-        let bytes = proc_listallpids(&pids, Int32(pids.count) * Int32(MemoryLayout<Int32>.size))
-        let found = max(0, Int(bytes) / MemoryLayout<Int32>.size)
+        let kinfo = allKinfoProcs()
+        guard !kinfo.isEmpty else { return [] }
 
         var current: [Int32: (time: UInt64, start: UInt64)] = [:]
-        current.reserveCapacity(found)
+        current.reserveCapacity(kinfo.count)
         var top: [TopProcess] = []
         let elapsed = previousTime.map { now - $0 } ?? 0
 
-        for pid in pids.prefix(found) where pid > 0 {
-            guard let rusage = processRusage(pid: pid) else { continue }
-            let totalTime = rusage.ri_user_time + rusage.ri_system_time
-            current[pid] = (time: totalTime, start: rusage.ri_proc_start_abstime)
+        for pid in kinfo.keys {
+            if let rusage = processRusage(pid: pid) {
+                let totalTime = rusage.ri_user_time + rusage.ri_system_time
+                current[pid] = (time: totalTime, start: rusage.ri_proc_start_abstime)
 
-            guard elapsed > 0,
-                  let old = previous[pid],
-                  old.start == rusage.ri_proc_start_abstime,
-                  totalTime >= old.time else { continue }
-            let pct = (Double(totalTime - old.time) / 1_000_000_000.0 / elapsed) * 100.0
-            guard pct > 0 else { continue }
-
-            insertTop(TopProcess(pid: pid, name: processName(pid: pid), value: pct), into: &top, count: n) {
-                $0.value > $1.value
+                guard elapsed > 0,
+                      let old = previous[pid],
+                      old.start == rusage.ri_proc_start_abstime,
+                      totalTime > old.time else { continue }
+                let pct = Double(totalTime - old.time) / 1_000_000_000.0 / elapsed * 100.0
+                insertTop(TopProcess(pid: pid, name: processName(pid: pid), value: pct), into: &top, count: n) {
+                    $0.value > $1.value
+                }
+            } else if let snap = kinfo[pid], snap.pctcpu > 0 {
+                let pct = Double(snap.pctcpu) / kFScale * 100.0
+                insertTop(TopProcess(pid: pid, name: processName(pid: pid), value: pct), into: &top, count: n) {
+                    $0.value > $1.value
+                }
             }
         }
 
         previous = current
-        nameCache = nameCache.filter { current[$0.key] != nil }
+        nameCache = nameCache.filter { kinfo[$0.key] != nil }
         previousTime = now
         return top
     }
 
     private func processName(pid: Int32) -> String {
         if let cached = nameCache[pid] { return cached }
-
         let name = displayName(pid: pid)
         nameCache[pid] = name
         return name
