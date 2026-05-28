@@ -1,4 +1,5 @@
 import AppKit
+import IOKit.ps
 
 @main
 struct Mactop {
@@ -23,6 +24,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var netView: SpeedView!
     private var monitor: SystemMonitor!
     private var detailTimer: DispatchSourceTimer?
+    private var powerSourceRunLoopSource: CFRunLoopSource?
     private let cpuProcessQueue = DispatchQueue(label: "mactop.cpu-process-reader", qos: .utility)
     private let ramProcessQueue = DispatchQueue(label: "mactop.ram-process-reader", qos: .utility)
     private let netProcessQueue = DispatchQueue(label: "mactop.net-process-reader", qos: .utility)
@@ -144,6 +146,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         )
+        installPowerSourceObserver()
 
         NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             self?.closeAllPanels()
@@ -172,6 +175,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     deinit {
         detailTimer?.cancel()
+        if let powerSourceRunLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), powerSourceRunLoopSource, .defaultMode)
+        }
+    }
+
+    private func installPowerSourceObserver() {
+        let context = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+        guard let source = IOPSNotificationCreateRunLoopSource({ context in
+            guard let context else { return }
+            let delegate = Unmanaged<AppDelegate>.fromOpaque(context).takeUnretainedValue()
+            delegate.monitor.powerSourceChanged()
+        }, context)?.takeRetainedValue() else { return }
+
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .defaultMode)
+        powerSourceRunLoopSource = source
     }
 
     private func refreshProcesses(for index: Int) {
@@ -312,6 +330,7 @@ final class SystemMonitor {
     private let gpuQueue = DispatchQueue(label: "mactop.monitor.gpu", qos: .utility)
     private let powerQueue = DispatchQueue(label: "mactop.monitor.power", qos: .utility)
     private let netQueue = DispatchQueue(label: "mactop.monitor.net", qos: .utility)
+    private let onPower: (PowerDetail) -> Void
     private var timers: [DispatchSourceTimer] = []
 
     init(config: Config,
@@ -320,6 +339,8 @@ final class SystemMonitor {
          onGPU: @escaping (GPUDetail) -> Void,
          onPower: @escaping (PowerDetail) -> Void,
          onNet: @escaping (NetDetail) -> Void) {
+
+        self.onPower = onPower
 
         cpuQueue.sync { _ = cpuReader.read() }
         netQueue.sync { _ = netReader.read() }
@@ -353,7 +374,7 @@ final class SystemMonitor {
             every(config.powerInterval, queue: powerQueue) { [weak self] in
                 guard let self else { return }
                 let power = self.powerReader.read()
-                DispatchQueue.main.async { onPower(power) }
+                DispatchQueue.main.async { self.onPower(power) }
             },
             every(config.netInterval, queue: netQueue) { [weak self] in
                 guard let self else { return }
@@ -361,6 +382,15 @@ final class SystemMonitor {
                 DispatchQueue.main.async { onNet(net) }
             },
         ]
+    }
+
+    func powerSourceChanged() {
+        powerQueue.async { [weak self] in
+            guard let self else { return }
+            self.powerReader.invalidateChargingCache()
+            let power = self.powerReader.read()
+            DispatchQueue.main.async { self.onPower(power) }
+        }
     }
 
     deinit {

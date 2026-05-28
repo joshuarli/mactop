@@ -125,6 +125,7 @@ Power uses two sources:
 - This is intended to represent whole-machine input/draw and includes power outside the SoC: display panel/backlight, radios, storage, USB/Thunderbolt, PMIC/conversion losses, charging/battery behavior, fans where present, and other board rails.
 - `AppleSmartBattery` telemetry can update slowly or stay cached for seconds/minutes on AC/full battery. Keep a System-minus-modeled baseline from that source, then let the live modeled subtotal move within it so menu-bar System power responds to fast IOReport changes.
 - This source may be unavailable on desktops or unusual battery states; in that case PWR falls back to modeled component power.
+- Charging data also comes from `AppleSmartBattery`: `AdapterDetails.Watts` is the negotiated adapter maximum, `SystemPowerIn` is current system input, and `BatteryPower` is battery charge/discharge when available. The popup's Charging section should keep those concepts separate; do not label adapter max as live draw.
 
 **Modeled component power**:
 - `PowerReader.IOReportPowerSampler` dynamically loads private `IOReport` with `dlopen`, trying `/usr/lib/libIOReport.dylib`, `libIOReport.dylib`, the old private framework path, then `IOReport`. Do not link IOReport in `Package.swift`.

@@ -596,6 +596,109 @@ final class StackedPowerChartView: NSView {
     }
 }
 
+// MARK: - PowerFlowView
+
+final class PowerFlowView: NSView {
+    private var charging: ChargingDetail?
+
+    func update(_ detail: ChargingDetail?) {
+        charging = detail
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+
+        guard let charging else {
+            drawText("Charging data unavailable", at: CGPoint(x: 10, y: 28), align: .left, color: .tertiaryLabelColor)
+            return
+        }
+
+        let systemWatts = max(charging.inputWatts ?? 0, 0)
+        let batteryWatts = charging.batteryWatts ?? 0
+        let chargeWatts = max(batteryWatts, 0)
+        let dischargeWatts = max(-batteryWatts, 0)
+        let adapterWatts = charging.externalConnected ? max(charging.chargerWatts ?? (systemWatts + chargeWatts), 0) : 0
+        let batteryFraction = charging.batteryFraction
+        let batteryPercent = batteryFraction.map { "\(Int(round($0 * 100)))%" }
+
+        let bar = NSRect(x: 10, y: 29, width: bounds.width - 20, height: 14)
+        let radius: CGFloat = 3
+        let background = NSBezierPath(roundedRect: bar, xRadius: radius, yRadius: radius)
+        NSColor.underPageBackgroundColor.withAlphaComponent(0.55).setFill()
+        background.fill()
+
+        func drawFill(fraction: Double, color: NSColor) {
+            let fill = NSRect(x: bar.minX, y: bar.minY, width: max(2, min(bar.width, CGFloat(fraction) * bar.width)), height: bar.height)
+            color.withAlphaComponent(0.82).setFill()
+            NSBezierPath(roundedRect: fill, xRadius: radius, yRadius: radius).fill()
+        }
+
+        if charging.externalConnected {
+            let color: NSColor = chargeWatts > 0 || charging.isCharging ? .systemYellow : .systemGreen
+            drawFill(fraction: batteryFraction ?? 1, color: color)
+
+            let title = chargeWatts > 0 || charging.isCharging ? "Charging battery" : "Power adapter"
+            let center = chargeWatts > 0 ? "+" + fmt(chargeWatts) : fmt(adapterWatts)
+            let right = batteryPercent ?? charging.status
+            drawText(title, at: CGPoint(x: 10, y: 49), align: .left, color: .secondaryLabelColor)
+            drawText(center, at: CGPoint(x: bounds.midX, y: 49), align: .center, color: color, weight: .medium)
+            drawText(right, at: CGPoint(x: bounds.width - 10, y: 49), align: .right, color: .secondaryLabelColor)
+            drawText("Adapter input " + fmt(adapterWatts), at: CGPoint(x: 10, y: 8), align: .left, color: .secondaryLabelColor)
+            drawText("System " + fmt(systemWatts), at: CGPoint(x: bounds.width - 10, y: 8), align: .right, color: .secondaryLabelColor)
+        } else if dischargeWatts > 0 {
+            let color = batteryColor(fraction: batteryFraction)
+            drawFill(fraction: batteryFraction ?? 1, color: color)
+
+            drawText("Battery powering Mac", at: CGPoint(x: 10, y: 49), align: .left, color: .secondaryLabelColor)
+            drawText(fmt(dischargeWatts), at: CGPoint(x: bounds.midX, y: 49), align: .center, color: .labelColor, weight: .medium)
+            drawText(batteryPercent ?? "Discharging", at: CGPoint(x: bounds.width - 10, y: 49), align: .right, color: color)
+            drawText("System load " + fmt(systemWatts), at: CGPoint(x: 10, y: 8), align: .left, color: .secondaryLabelColor)
+            drawText("Battery -> system", at: CGPoint(x: bounds.width - 10, y: 8), align: .right, color: .secondaryLabelColor)
+        } else {
+            drawFill(fraction: batteryFraction ?? 1, color: batteryColor(fraction: batteryFraction))
+            drawText("Battery", at: CGPoint(x: 10, y: 49), align: .left, color: .secondaryLabelColor)
+            drawText(fmt(systemWatts), at: CGPoint(x: bounds.midX, y: 49), align: .center, color: .labelColor, weight: .medium)
+            drawText(batteryPercent ?? charging.status, at: CGPoint(x: bounds.width - 10, y: 49), align: .right, color: .secondaryLabelColor)
+            drawText("System load " + fmt(systemWatts), at: CGPoint(x: 10, y: 8), align: .left, color: .secondaryLabelColor)
+        }
+    }
+
+    private enum TextAlign {
+        case left
+        case center
+        case right
+    }
+
+    private func drawText(_ text: String, at point: CGPoint, align: TextAlign, color: NSColor, weight: NSFont.Weight = .regular) {
+        let font = NSFont.systemFont(ofSize: 11, weight: weight)
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: color,
+        ]
+        let width = text.widthOfString(usingFont: font)
+        let x: CGFloat
+        switch align {
+        case .left: x = point.x
+        case .center: x = point.x - width / 2
+        case .right: x = point.x - width
+        }
+        NSAttributedString(string: text, attributes: attrs)
+            .draw(with: NSRect(x: x, y: point.y, width: width + 1, height: 14))
+    }
+
+    private func fmt(_ watts: Double) -> String {
+        watts < 10 ? String(format: "%.1f W", watts) : String(format: "%.0f W", watts)
+    }
+
+    private func batteryColor(fraction: Double?) -> NSColor {
+        guard let fraction else { return .systemGreen }
+        if fraction <= 0.2 { return .systemRed }
+        if fraction <= 0.5 { return .systemYellow }
+        return .systemGreen
+    }
+}
+
 // MARK: - GridChartView
 // Connectivity history grid. Faithful port.
 

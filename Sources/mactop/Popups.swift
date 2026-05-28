@@ -799,7 +799,13 @@ final class PowerPopupView: NSStackView {
     private var mediaValue: ValueField!
     private var displayValue: ValueField!
     private var otherValue: ValueField!
+    private var adapterValue: ValueField!
+    private var systemLoadValue: ValueField!
+    private var batteryValue: ValueField!
+    private var chargeLabel: LabelField!
+    private var chargeValue: ValueField!
     private var chart: StackedPowerChartView!
+    private var flowView: PowerFlowView!
 
     init() {
         super.init(frame: NSRect(x: 0, y: 0, width: popupWidth, height: 0))
@@ -811,6 +817,9 @@ final class PowerPopupView: NSStackView {
         addArrangedSubview(separatorView("Power"))
         initRows()
         addArrangedSubview(initChart())
+        addArrangedSubview(separatorView("Charging"))
+        initChargingRows()
+        addArrangedSubview(initFlow())
         recalcHeight()
     }
 
@@ -837,6 +846,26 @@ final class PowerPopupView: NSStackView {
         (_, _, mediaValue) = popupWithColorRow(self, color: mediaColor, title: "Media", value: "--W")
         (_, _, displayValue) = popupWithColorRow(self, color: displayColor, title: "Display", value: "--W")
         (_, _, otherValue) = popupWithColorRow(self, color: otherColor, title: "Other SoC", value: "--W")
+    }
+
+    private func initChargingRows() {
+        (_, adapterValue, _) = popupRow(self, title: "Adapter", value: "--")
+        (_, systemLoadValue, _) = popupRow(self, title: "System", value: "--W")
+        (_, batteryValue, _) = popupRow(self, title: "Battery", value: "--")
+        (chargeLabel, chargeValue, _) = popupRow(self, title: "Charge", value: "--W")
+    }
+
+    private func initFlow() -> NSView {
+        let flowH: CGFloat = 70
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: flowH))
+        view.heightAnchor.constraint(equalToConstant: flowH).isActive = true
+
+        flowView = PowerFlowView(frame: NSRect(x: margins, y: 0, width: popupWidth - margins*2, height: flowH))
+        flowView.wantsLayer = true
+        flowView.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
+        flowView.layer?.cornerRadius = 3
+        view.addSubview(flowView)
+        return view
     }
 
     private func initChart() -> NSView {
@@ -873,6 +902,7 @@ final class PowerPopupView: NSStackView {
         mediaValue.stringValue = fmtPower(d.media)
         displayValue.stringValue = fmtPower(d.display)
         otherValue.stringValue = fmtPower(d.other)
+        updateCharging(d.charging)
 
         guard let cpu = d.cpu,
               let gpu = d.gpu,
@@ -901,6 +931,34 @@ final class PowerPopupView: NSStackView {
             )
         } else {
             chart.addValue(system: system, cpu: cpu, gpu: gpu, ane: ane, memory: memory, media: media, display: display, other: other)
+        }
+    }
+
+    private func updateCharging(_ detail: ChargingDetail?) {
+        flowView.update(detail)
+        guard let detail else {
+            adapterValue.stringValue = "--"
+            systemLoadValue.stringValue = "--W"
+            batteryValue.stringValue = "--"
+            chargeLabel.stringValue = "Charge"
+            chargeValue.stringValue = "--W"
+            return
+        }
+
+        if let adapterWatts = detail.adapterWatts {
+            adapterValue.stringValue = fmtPower(adapterWatts) + " max"
+        } else {
+            adapterValue.stringValue = detail.adapterName ?? (detail.externalConnected ? "Connected" : "Not connected")
+        }
+        systemLoadValue.stringValue = fmtPower(detail.inputWatts)
+        let percent = detail.batteryFraction.map { "\(Int(round($0 * 100)))%" }
+        batteryValue.stringValue = [detail.status, percent].compactMap { $0 }.joined(separator: " ")
+        if let batteryWatts = detail.batteryWatts, batteryWatts != 0 {
+            chargeLabel.stringValue = batteryWatts > 0 ? "Charge" : "Discharge"
+            chargeValue.stringValue = (batteryWatts > 0 ? "+" : "") + fmtPower(abs(batteryWatts))
+        } else {
+            chargeLabel.stringValue = "Charge"
+            chargeValue.stringValue = detail.isFullyCharged ? "Full" : "--W"
         }
     }
 

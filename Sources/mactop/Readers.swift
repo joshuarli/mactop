@@ -423,6 +423,7 @@ struct PowerDetail {
     var total: Double?
     var system: Double?
     var modeled: Double?
+    var charging: ChargingDetail?
     var cpu: Double?
     var gpu: Double?
     var ane: Double?
@@ -439,6 +440,28 @@ struct PowerDetail {
     var mediaHistory: [Double]
     var displayHistory: [Double]
     var otherHistory: [Double]
+}
+
+struct ChargingDetail {
+    var externalConnected: Bool
+    var isCharging: Bool
+    var isFullyCharged: Bool
+    var adapterName: String?
+    var adapterWatts: Double?
+    var inputWatts: Double?
+    var batteryWatts: Double?
+    var batteryFraction: Double?
+    var wallWatts: Double?
+    var chargerWatts: Double? {
+        guard let inputWatts else { return nil }
+        return inputWatts + max(batteryWatts ?? 0, 0)
+    }
+    var status: String {
+        if !externalConnected { return "Battery" }
+        if isCharging { return "Charging" }
+        if isFullyCharged { return "Full" }
+        return "Connected"
+    }
 }
 
 final class PowerReader {
@@ -699,7 +722,7 @@ final class PowerReader {
     }
 
     private final class SystemPowerReader {
-        func read() -> Double? {
+        func read() -> ChargingDetail? {
             let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
             guard service != 0 else { return nil }
             defer { IOObjectRelease(service) }
@@ -708,7 +731,27 @@ final class PowerReader {
             guard IORegistryEntryCreateCFProperties(service, &unmanagedProperties, kCFAllocatorDefault, 0) == KERN_SUCCESS,
                   let properties = unmanagedProperties?.takeRetainedValue() as? [String: Any] else { return nil }
 
-            if let telemetry = properties["PowerTelemetryData"] as? [String: Any] {
+            let telemetry = properties["PowerTelemetryData"] as? [String: Any]
+            let systemWatts = systemWatts(properties: properties, telemetry: telemetry)
+            let batteryWatts = numeric(telemetry?["BatteryPower"]).flatMap { batteryPowerWatts($0) }
+            let batteryFraction = batteryFraction(properties)
+            let adapter = adapterDetails(properties)
+
+            return ChargingDetail(
+                externalConnected: bool(properties["ExternalConnected"]) ?? bool(properties["AppleRawExternalConnected"]) ?? false,
+                isCharging: bool(properties["IsCharging"]) ?? false,
+                isFullyCharged: bool(properties["FullyCharged"]) ?? false,
+                adapterName: adapter.name,
+                adapterWatts: adapter.watts,
+                inputWatts: systemWatts,
+                batteryWatts: batteryWatts,
+                batteryFraction: batteryFraction,
+                wallWatts: numeric(telemetry?["WallEnergyEstimate"]).map { $0 / 1_000 }
+            )
+        }
+
+        private func systemWatts(properties: [String: Any], telemetry: [String: Any]?) -> Double? {
+            if let telemetry {
                 if let power = numeric(telemetry["SystemPowerIn"]), power > 0 {
                     return power / 1_000
                 }
@@ -729,6 +772,36 @@ final class PowerReader {
             let amperage = numeric(properties["InstantAmperage"]) ?? numeric(properties["Amperage"]) ?? 0
             guard voltage > 0, amperage != 0 else { return nil }
             return abs(voltage * amperage) / 1_000_000
+        }
+
+        private func adapterDetails(_ properties: [String: Any]) -> (name: String?, watts: Double?) {
+            let details = properties["AdapterDetails"] as? [String: Any]
+                ?? (properties["AppleRawAdapterDetails"] as? [[String: Any]])?.first
+            return (details?["Name"] as? String, numeric(details?["Watts"]))
+        }
+
+        private func batteryPowerWatts(_ milliwatts: Double) -> Double? {
+            guard milliwatts != 0 else { return nil }
+            guard abs(milliwatts) < 1_000_000 else { return nil }
+            return milliwatts / 1_000
+        }
+
+        private func batteryFraction(_ properties: [String: Any]) -> Double? {
+            let current = numeric(properties["CurrentCapacity"]) ?? numeric(properties["AppleRawCurrentCapacity"])
+            let capacity = numeric(properties["MaxCapacity"]) ?? numeric(properties["AppleRawMaxCapacity"])
+            guard let current, let capacity, capacity > 0 else { return nil }
+            return min(1, max(0, current / capacity))
+        }
+
+        private func bool(_ value: Any?) -> Bool? {
+            switch value {
+            case let value as Bool:
+                return value
+            case let number as NSNumber:
+                return number.boolValue
+            default:
+                return nil
+            }
         }
 
         private func numeric(_ value: Any?) -> Double? {
@@ -763,9 +836,17 @@ final class PowerReader {
     private var otherHistory = ScalarHistory(capacity: 180)
     private var systemOverhead: Double?
     private var lastRawSystem: Double?
-    private var cachedRawSystem: Double?
+    private var cachedCharging: ChargingDetail?
     private var rawSystemLastRead = Date.distantPast
     private var current: PowerSample?
+    private let chargingCacheInterval: TimeInterval = 2
+
+    func invalidateChargingCache() {
+        cachedCharging = nil
+        rawSystemLastRead = .distantPast
+        lastRawSystem = nil
+        systemOverhead = nil
+    }
 
     func read() -> PowerDetail {
         if !samplerAttempted {
@@ -773,7 +854,8 @@ final class PowerReader {
             samplerAttempted = true
         }
 
-        let rawSystem = readRawSystemPower()
+        let charging = readChargingDetail()
+        let rawSystem = charging?.inputWatts
         if let sample = sampler?.readPower() {
             if let rawSystem, (lastRawSystem != rawSystem || systemOverhead == nil) {
                 systemOverhead = max(0, rawSystem - sample.modeled)
@@ -826,6 +908,7 @@ final class PowerReader {
             total: current?.total,
             system: current?.system,
             modeled: hasModeled ? current?.modeled : nil,
+            charging: charging,
             cpu: hasModeled ? current?.cpu : nil,
             gpu: hasModeled ? current?.gpu : nil,
             ane: hasModeled ? current?.ane : nil,
@@ -845,13 +928,13 @@ final class PowerReader {
         )
     }
 
-    private func readRawSystemPower() -> Double? {
+    private func readChargingDetail() -> ChargingDetail? {
         let now = Date()
-        if cachedRawSystem == nil || now.timeIntervalSince(rawSystemLastRead) >= 15 {
-            cachedRawSystem = systemPowerReader.read()
+        if cachedCharging == nil || now.timeIntervalSince(rawSystemLastRead) >= chargingCacheInterval {
+            cachedCharging = systemPowerReader.read()
             rawSystemLastRead = now
         }
-        return cachedRawSystem
+        return cachedCharging
     }
 }
 
