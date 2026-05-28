@@ -791,7 +791,7 @@ final class PowerPopupView: NSStackView {
     private let systemColor = NSColor.secondaryLabelColor
 
     private var systemValue: ValueField!
-    private var socValue: ValueField!
+    private var modeledValue: ValueField!
     private var cpuValue: ValueField!
     private var gpuValue: ValueField!
     private var aneValue: ValueField!
@@ -829,7 +829,7 @@ final class PowerPopupView: NSStackView {
 
     private func initRows() {
         (_, systemValue, _) = popupRow(self, title: "System", value: "--W")
-        (_, socValue, _) = popupRow(self, title: "SoC", value: "--W")
+        (_, modeledValue, _) = popupRow(self, title: "Modeled", value: "--W")
         (_, _, cpuValue) = popupWithColorRow(self, color: cpuColor, title: "CPU", value: "--W")
         (_, _, gpuValue) = popupWithColorRow(self, color: gpuColor, title: "GPU", value: "--W")
         (_, _, aneValue) = popupWithColorRow(self, color: aneColor, title: "ANE", value: "--W")
@@ -865,7 +865,7 @@ final class PowerPopupView: NSStackView {
 
     func update(_ d: PowerDetail, syncHistory: Bool = false) {
         systemValue.stringValue = fmtPower(d.system)
-        socValue.stringValue = fmtPower(d.soc)
+        modeledValue.stringValue = fmtPower(d.modeled)
         cpuValue.stringValue = fmtPower(d.cpu)
         gpuValue.stringValue = fmtPower(d.gpu)
         aneValue.stringValue = fmtPower(d.ane)

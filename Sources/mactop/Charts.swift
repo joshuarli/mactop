@@ -534,8 +534,8 @@ final class StackedPowerChartView: NSView {
 
     func addValue(system: Double, cpu: Double, gpu: Double, ane: Double, memory: Double, media: Double, display: Double, other: Double) {
         guard !samples.isEmpty else { return }
-        let soc = cpu + gpu + ane + memory + media + display + other
-        samples[nextSampleIndex] = Sample(system: max(system, soc), cpu: cpu, gpu: gpu, ane: ane, memory: memory, media: media, display: display, other: other)
+        let modeled = cpu + gpu + ane + memory + media + display + other
+        samples[nextSampleIndex] = Sample(system: max(system, modeled), cpu: cpu, gpu: gpu, ane: ane, memory: memory, media: media, display: display, other: other)
         nextSampleIndex = (nextSampleIndex + 1) % samples.count
         if nextSampleIndex == 0 { samplesAreFull = true }
         if window?.isVisible ?? false {
@@ -565,9 +565,9 @@ final class StackedPowerChartView: NSView {
         let displaySlice = Array(display.suffix(count))
         let otherSlice = Array(other.suffix(count))
         for i in 0..<count {
-            let soc = cpuSlice[i] + gpuSlice[i] + aneSlice[i] + memorySlice[i] + mediaSlice[i] + displaySlice[i] + otherSlice[i]
+            let modeled = cpuSlice[i] + gpuSlice[i] + aneSlice[i] + memorySlice[i] + mediaSlice[i] + displaySlice[i] + otherSlice[i]
             samples[nextSampleIndex] = Sample(
-                system: max(systemSlice[i], soc),
+                system: max(systemSlice[i], modeled),
                 cpu: cpuSlice[i],
                 gpu: gpuSlice[i],
                 ane: aneSlice[i],

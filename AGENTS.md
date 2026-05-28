@@ -124,14 +124,15 @@ Power uses two sources:
 - `PowerTelemetryData.SystemPowerIn` is preferred, falling back to `SystemCurrentIn * SystemVoltageIn`, `SystemLoad`, `BatteryPower`, then raw battery `Voltage * InstantAmperage`/`Amperage`.
 - This is intended to represent whole-machine input/draw and includes power outside the SoC: display panel/backlight, radios, storage, USB/Thunderbolt, PMIC/conversion losses, charging/battery behavior, fans where present, and other board rails.
 - `AppleSmartBattery` telemetry can update slowly or stay cached for seconds/minutes on AC/full battery. Keep a System-minus-modeled baseline from that source, then let the live modeled subtotal move within it so menu-bar System power responds to fast IOReport changes.
-- This source may be unavailable on desktops or unusual battery states; in that case PWR falls back to SoC power.
+- This source may be unavailable on desktops or unusual battery states; in that case PWR falls back to modeled component power.
 
-**SoC power** (component breakdown):
+**Modeled component power**:
 - `PowerReader.IOReportPowerSampler` dynamically loads private `IOReport` with `dlopen`, trying `/usr/lib/libIOReport.dylib`, `libIOReport.dylib`, the old private framework path, then `IOReport`. Do not link IOReport in `Package.swift`.
-- It subscribes to `Energy Model` plus DCP display-report groups, samples twice, deltas counters with real elapsed time, and converts `mJ`/`uJ`/`nJ` to watts.
-- Channel mapping: `GPU Energy` → GPU; names ending in `CPU Energy` → CPU; names starting with `ANE` → ANE; names starting with `DRAM`, `AMCC`, or `GPU SRAM` → Memory; names starting with `DCS` → Display; DCP/DCPEXT `display stats` `power` deltas are treated as live display power; names starting with `AVE`, `ISP`, or `MSR` → Media; names containing `PCIe` or starting with `apciec` → Other SoC.
+- It subscribes to `Energy Model` plus DCP/DCPEXT display-report groups, samples twice, deltas counters with real elapsed time, and converts `mJ`/`uJ`/`nJ` to watts. Avoid `IOReportCopyAllChannels`; DCP `display stats` subgroup-only subscriptions can return zero deltas for `power`, so use the DCP group and filter to `display stats` while parsing.
+- Channel mapping: `GPU Energy` → GPU; names ending in `CPU Energy` → CPU; names starting with `ANE` → ANE; names starting with `DRAM`, `AMCC`, or `GPU SRAM` → Memory; DCP/DCPEXT `display stats` `power` deltas are preferred for Display, with Energy Model `DCS*` used only as a fallback; names starting with `AVE`, `ISP`, or `MSR` → Media; names containing `PCIe` or starting with `apciec` → Other SoC.
 - Avoid summing detailed CPU/GPU subrails such as `PACC*_CPU*`, `PCPUDTL*`, and similar detail channels into totals; they overlap with aggregate CPU/GPU energy channels and would double-count.
 - It is normal for System power to be considerably higher than modeled component power. The modeled subtotal is not board power. The PWR popup should keep System and the modeled subtotal separate and graph System as the outer total with the component stack inside it, so the System-minus-modeled delta is visible. Keep Display and Media as separate chart bands; do not collapse them into Other SoC after computing them as separate rows.
+- Set `MACTOP_DEBUG_POWER=1` to print the matched private power channels and watts once after the first delta sample. This is useful when Apple changes channel names on new chips or macOS releases.
 
 Network interface totals use `getifaddrs` and sum `en*` interface byte counters. Interface metadata uses SystemConfiguration. Public IP is fetched asynchronously from `https://api.ipify.org`.
 

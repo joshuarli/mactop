@@ -422,7 +422,7 @@ final class GPUReader {
 struct PowerDetail {
     var total: Double?
     var system: Double?
-    var soc: Double?
+    var modeled: Double?
     var cpu: Double?
     var gpu: Double?
     var ane: Double?
@@ -431,7 +431,7 @@ struct PowerDetail {
     var display: Double?
     var other: Double?
     var totalHistory: [Double]
-    var socHistory: [Double]
+    var modeledHistory: [Double]
     var cpuHistory: [Double]
     var gpuHistory: [Double]
     var aneHistory: [Double]
@@ -451,13 +451,13 @@ final class PowerReader {
         var display: Double
         var other: Double
         var system: Double?
-        var hasSoC: Bool
-        var soc: Double { cpu + gpu + ane + memory + media + display + other }
-        var total: Double { system ?? soc }
+        var hasModeled: Bool
+        var modeled: Double { cpu + gpu + ane + memory + media + display + other }
+        var total: Double { system ?? modeled }
     }
 
     private final class IOReportPowerSampler {
-        private struct API {
+        private struct IOReportAPI {
             typealias CopyChannelsInGroup = @convention(c) (UnsafeRawPointer?, UnsafeRawPointer?, UInt64, UInt64, UInt64) -> UnsafeRawPointer?
             typealias CreateSubscription = @convention(c) (UnsafeRawPointer?, UnsafeRawPointer?, UnsafeMutablePointer<UnsafeRawPointer?>?, UInt64, UnsafeRawPointer?) -> UnsafeRawPointer?
             typealias CreateSamples = @convention(c) (UnsafeRawPointer?, UnsafeRawPointer?, UnsafeRawPointer?) -> UnsafeRawPointer?
@@ -479,9 +479,11 @@ final class PowerReader {
             var simpleGetIntegerValue: SimpleIntegerValue
         }
 
-        private let api: API
+        private let api: IOReportAPI
         private let channels: CFMutableDictionary
         private let subscription: UnsafeRawPointer
+        private let debugEnabled = ProcessInfo.processInfo.environment["MACTOP_DEBUG_POWER"] == "1"
+        private var didLogDebug = false
         private var previousSample: (sample: CFDictionary, time: Date)?
 
         init?() {
@@ -540,9 +542,11 @@ final class PowerReader {
             var ane = 0.0
             var memory = 0.0
             var media = 0.0
-            var display = 0.0
+            var energyDisplay = 0.0
+            var dcpDisplay = 0.0
             var other = 0.0
             var found = false
+            var debugRows: [String] = []
 
             for i in 0..<count {
                 guard let item = CFArrayGetValueAtIndex(array, i) else { continue }
@@ -568,7 +572,7 @@ final class PowerReader {
                         memory += watts
                         found = true
                     case let name where name.hasPrefix("DCS"):
-                        display += watts
+                        energyDisplay += watts
                         found = true
                     case let name where name.hasPrefix("AVE") || name.hasPrefix("ISP") || name.hasPrefix("MSR"):
                         media += watts
@@ -579,14 +583,27 @@ final class PowerReader {
                     default:
                         continue
                     }
+                    if debugEnabled {
+                        debugRows.append(String(format: "Energy Model/%@: %.3f W", channel, watts))
+                    }
                 } else if group.hasPrefix("DCP"), subgroup == "display stats", channel == "power" {
-                    display += Double(api.simpleGetIntegerValue(item, 0)) / 1_000_000 / elapsed
+                    let watts = Double(api.simpleGetIntegerValue(item, 0)) / 1_000_000 / elapsed
+                    dcpDisplay += watts
                     found = true
+                    if debugEnabled {
+                        debugRows.append(String(format: "%@/%@/%@: %.3f W", group, subgroup, channel, watts))
+                    }
                 }
             }
 
             guard found else { return nil }
-            return PowerSample(cpu: cpu, gpu: gpu, ane: ane, memory: memory, media: media, display: display, other: other, system: nil, hasSoC: true)
+            if debugEnabled, !didLogDebug {
+                didLogDebug = true
+                fputs((["mactop power channels:"] + debugRows.sorted()).joined(separator: "\n") + "\n", stderr)
+            }
+
+            let display = dcpDisplay > 0 ? dcpDisplay : energyDisplay
+            return PowerSample(cpu: cpu, gpu: gpu, ane: ane, memory: memory, media: media, display: display, other: other, system: nil, hasModeled: true)
         }
 
         private func watts(item: UnsafeRawPointer, unit: String, elapsed: TimeInterval) -> Double? {
@@ -606,7 +623,7 @@ final class PowerReader {
             return Unmanaged<CFString>.fromOpaque(pointer).takeUnretainedValue() as String
         }
 
-        private static func loadAPI() -> API? {
+        private static func loadAPI() -> IOReportAPI? {
             let paths = [
                 "/usr/lib/libIOReport.dylib",
                 "libIOReport.dylib",
@@ -616,21 +633,21 @@ final class PowerReader {
 
             guard let handle = paths.lazy.compactMap({ dlopen($0, RTLD_LAZY) }).first else { return nil }
 
-            guard let copyChannelsInGroup = symbol(handle, "IOReportCopyChannelsInGroup", as: API.CopyChannelsInGroup.self),
-                  let createSubscription = symbol(handle, "IOReportCreateSubscription", as: API.CreateSubscription.self),
-                  let createSamples = symbol(handle, "IOReportCreateSamples", as: API.CreateSamples.self),
-                  let createSamplesDelta = symbol(handle, "IOReportCreateSamplesDelta", as: API.CreateSamplesDelta.self),
-                  let mergeChannels = symbol(handle, "IOReportMergeChannels", as: API.MergeChannels.self),
-                  let channelGetGroup = symbol(handle, "IOReportChannelGetGroup", as: API.ChannelString.self),
-                  let channelGetSubGroup = symbol(handle, "IOReportChannelGetSubGroup", as: API.ChannelString.self),
-                  let channelGetChannelName = symbol(handle, "IOReportChannelGetChannelName", as: API.ChannelString.self),
-                  let channelGetUnitLabel = symbol(handle, "IOReportChannelGetUnitLabel", as: API.ChannelString.self),
-                  let simpleGetIntegerValue = symbol(handle, "IOReportSimpleGetIntegerValue", as: API.SimpleIntegerValue.self) else {
+            guard let copyChannelsInGroup = symbol(handle, "IOReportCopyChannelsInGroup", as: IOReportAPI.CopyChannelsInGroup.self),
+                  let createSubscription = symbol(handle, "IOReportCreateSubscription", as: IOReportAPI.CreateSubscription.self),
+                  let createSamples = symbol(handle, "IOReportCreateSamples", as: IOReportAPI.CreateSamples.self),
+                  let createSamplesDelta = symbol(handle, "IOReportCreateSamplesDelta", as: IOReportAPI.CreateSamplesDelta.self),
+                  let mergeChannels = symbol(handle, "IOReportMergeChannels", as: IOReportAPI.MergeChannels.self),
+                  let channelGetGroup = symbol(handle, "IOReportChannelGetGroup", as: IOReportAPI.ChannelString.self),
+                  let channelGetSubGroup = symbol(handle, "IOReportChannelGetSubGroup", as: IOReportAPI.ChannelString.self),
+                  let channelGetChannelName = symbol(handle, "IOReportChannelGetChannelName", as: IOReportAPI.ChannelString.self),
+                  let channelGetUnitLabel = symbol(handle, "IOReportChannelGetUnitLabel", as: IOReportAPI.ChannelString.self),
+                  let simpleGetIntegerValue = symbol(handle, "IOReportSimpleGetIntegerValue", as: IOReportAPI.SimpleIntegerValue.self) else {
                 dlclose(handle)
                 return nil
             }
 
-            return API(
+            return IOReportAPI(
                 handle: handle,
                 copyChannelsInGroup: copyChannelsInGroup,
                 createSubscription: createSubscription,
@@ -650,13 +667,20 @@ final class PowerReader {
             return unsafeBitCast(pointer, to: type)
         }
 
-        private static func copyPowerChannels(api: API) -> CFMutableDictionary? {
-            let groupNames = ["Energy Model", "DCP", "DCPEXT0", "DCPEXT1"]
+        private static func copyPowerChannels(api: IOReportAPI) -> CFMutableDictionary? {
+            let groups = [
+                (group: "Energy Model", subgroup: nil as String?),
+                (group: "DCP", subgroup: nil as String?),
+                (group: "DCPEXT0", subgroup: nil as String?),
+                (group: "DCPEXT1", subgroup: nil as String?),
+            ]
             var dictionaries: [CFDictionary] = []
-            for groupName in groupNames {
-                let group = groupName as CFString
+            for entry in groups {
+                let group = entry.group as CFString
                 let groupPtr = Unmanaged.passUnretained(group).toOpaque()
-                guard let rawPtr = api.copyChannelsInGroup(groupPtr, nil, 0, 0, 0) else { continue }
+                let subgroup = entry.subgroup.map { $0 as CFString }
+                let subgroupPtr = subgroup.map { Unmanaged.passUnretained($0).toOpaque() }
+                guard let rawPtr = api.copyChannelsInGroup(groupPtr, subgroupPtr, 0, 0, 0) else { continue }
                 dictionaries.append(Unmanaged<CFDictionary>.fromOpaque(rawPtr).takeRetainedValue())
             }
 
@@ -729,7 +753,7 @@ final class PowerReader {
     private var sampler: IOReportPowerSampler?
     private let systemPowerReader = SystemPowerReader()
     private var totalHistory = ScalarHistory(capacity: 180)
-    private var socHistory = ScalarHistory(capacity: 180)
+    private var modeledHistory = ScalarHistory(capacity: 180)
     private var cpuHistory = ScalarHistory(capacity: 180)
     private var gpuHistory = ScalarHistory(capacity: 180)
     private var aneHistory = ScalarHistory(capacity: 180)
@@ -739,6 +763,8 @@ final class PowerReader {
     private var otherHistory = ScalarHistory(capacity: 180)
     private var systemOverhead: Double?
     private var lastRawSystem: Double?
+    private var cachedRawSystem: Double?
+    private var rawSystemLastRead = Date.distantPast
     private var current: PowerSample?
 
     func read() -> PowerDetail {
@@ -747,13 +773,13 @@ final class PowerReader {
             samplerAttempted = true
         }
 
-        let rawSystem = systemPowerReader.read()
+        let rawSystem = readRawSystemPower()
         if let sample = sampler?.readPower() {
             if let rawSystem, (lastRawSystem != rawSystem || systemOverhead == nil) {
-                systemOverhead = max(0, rawSystem - sample.soc)
+                systemOverhead = max(0, rawSystem - sample.modeled)
                 lastRawSystem = rawSystem
             }
-            let system = systemOverhead.map { sample.soc + $0 } ?? rawSystem
+            let system = systemOverhead.map { sample.modeled + $0 } ?? rawSystem
             current = PowerSample(
                 cpu: sample.cpu,
                 gpu: sample.gpu,
@@ -763,7 +789,7 @@ final class PowerReader {
                 display: sample.display,
                 other: sample.other,
                 system: system,
-                hasSoC: true
+                hasModeled: true
             )
         } else if let current, current.system != rawSystem {
             self.current = PowerSample(
@@ -775,16 +801,16 @@ final class PowerReader {
                 display: current.display,
                 other: current.other,
                 system: rawSystem,
-                hasSoC: current.hasSoC
+                hasModeled: current.hasModeled
             )
         } else if current == nil, rawSystem != nil {
-            current = PowerSample(cpu: 0, gpu: 0, ane: 0, memory: 0, media: 0, display: 0, other: 0, system: rawSystem, hasSoC: false)
+            current = PowerSample(cpu: 0, gpu: 0, ane: 0, memory: 0, media: 0, display: 0, other: 0, system: rawSystem, hasModeled: false)
         }
 
         if let sample = current {
             totalHistory.append(sample.total)
-            if sample.hasSoC {
-                socHistory.append(sample.soc)
+            if sample.hasModeled {
+                modeledHistory.append(sample.modeled)
                 cpuHistory.append(sample.cpu)
                 gpuHistory.append(sample.gpu)
                 aneHistory.append(sample.ane)
@@ -795,20 +821,20 @@ final class PowerReader {
             }
         }
 
-        let hasSoC = current?.hasSoC == true
+        let hasModeled = current?.hasModeled == true
         return PowerDetail(
             total: current?.total,
             system: current?.system,
-            soc: hasSoC ? current?.soc : nil,
-            cpu: hasSoC ? current?.cpu : nil,
-            gpu: hasSoC ? current?.gpu : nil,
-            ane: hasSoC ? current?.ane : nil,
-            memory: hasSoC ? current?.memory : nil,
-            media: hasSoC ? current?.media : nil,
-            display: hasSoC ? current?.display : nil,
-            other: hasSoC ? current?.other : nil,
+            modeled: hasModeled ? current?.modeled : nil,
+            cpu: hasModeled ? current?.cpu : nil,
+            gpu: hasModeled ? current?.gpu : nil,
+            ane: hasModeled ? current?.ane : nil,
+            memory: hasModeled ? current?.memory : nil,
+            media: hasModeled ? current?.media : nil,
+            display: hasModeled ? current?.display : nil,
+            other: hasModeled ? current?.other : nil,
             totalHistory: totalHistory.orderedValues,
-            socHistory: socHistory.orderedValues,
+            modeledHistory: modeledHistory.orderedValues,
             cpuHistory: cpuHistory.orderedValues,
             gpuHistory: gpuHistory.orderedValues,
             aneHistory: aneHistory.orderedValues,
@@ -817,6 +843,15 @@ final class PowerReader {
             displayHistory: displayHistory.orderedValues,
             otherHistory: otherHistory.orderedValues
         )
+    }
+
+    private func readRawSystemPower() -> Double? {
+        let now = Date()
+        if cachedRawSystem == nil || now.timeIntervalSince(rawSystemLastRead) >= 15 {
+            cachedRawSystem = systemPowerReader.read()
+            rawSystemLastRead = now
+        }
+        return cachedRawSystem
     }
 }
 
