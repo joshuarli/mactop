@@ -422,6 +422,11 @@ final class NetworkChartView: NSView {
         inChart.setValues(values.map(\.down))
     }
 
+    func reinit(_ num: Int) {
+        outChart.reinit(num)
+        inChart.reinit(num)
+    }
+
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         let h = max(newSize.height, 2)

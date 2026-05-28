@@ -14,6 +14,9 @@ struct Config {
     var gpuInterval: Double
     var netInterval: Double
     var powerInterval: Double
+    var syncedInterval: Double {
+        max(cpuInterval, ramInterval, gpuInterval, netInterval, powerInterval)
+    }
 
     static let bundleID = "com.mactop"
 

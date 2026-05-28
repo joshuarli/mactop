@@ -323,8 +323,9 @@ final class SystemMonitor {
     private let cpuReader: CPUReader
     private let ramReader: RAMReader
     private let gpuReader: GPUReader
-    private let powerReader = PowerReader()
+    private let powerReader: PowerReader
     private let netReader: NetReader
+    private let coordinatorQueue = DispatchQueue(label: "mactop.monitor.coordinator", qos: .utility)
     private let cpuQueue = DispatchQueue(label: "mactop.monitor.cpu", qos: .utility)
     private let ramQueue = DispatchQueue(label: "mactop.monitor.ram", qos: .utility)
     private let gpuQueue = DispatchQueue(label: "mactop.monitor.gpu", qos: .utility)
@@ -332,6 +333,11 @@ final class SystemMonitor {
     private let netQueue = DispatchQueue(label: "mactop.monitor.net", qos: .utility)
     private let onPower: (PowerDetail) -> Void
     private var timers: [DispatchSourceTimer] = []
+    private var cpuReadInFlight = false
+    private var ramReadInFlight = false
+    private var gpuReadInFlight = false
+    private var powerReadInFlight = false
+    private var netReadInFlight = false
 
     init(config: Config,
          onCPU: @escaping (CPUDetail) -> Void,
@@ -340,60 +346,84 @@ final class SystemMonitor {
          onPower: @escaping (PowerDetail) -> Void,
          onNet: @escaping (NetDetail) -> Void) {
 
-        cpuReader = CPUReader(updateInterval: config.cpuInterval)
-        ramReader = RAMReader(updateInterval: config.ramInterval)
-        gpuReader = GPUReader(updateInterval: config.gpuInterval)
-        netReader = NetReader(updateInterval: config.netInterval)
+        let interval = config.syncedInterval
+        cpuReader = CPUReader(updateInterval: interval)
+        ramReader = RAMReader(updateInterval: interval)
+        gpuReader = GPUReader(updateInterval: interval)
+        powerReader = PowerReader(updateInterval: interval)
+        netReader = NetReader(updateInterval: interval)
         self.onPower = onPower
 
-        cpuQueue.sync { _ = cpuReader.read() }
-        netQueue.sync { _ = netReader.read() }
-
-        func every(_ interval: Double, queue: DispatchQueue, _ block: @escaping () -> Void) -> DispatchSourceTimer {
-            let timer = DispatchSource.makeTimerSource(queue: queue)
-            let ms = max(1, Int(interval * 1000))
-            let repeating = DispatchTimeInterval.milliseconds(ms)
-            timer.schedule(deadline: .now() + repeating, repeating: repeating, leeway: .milliseconds(100))
-            timer.setEventHandler(handler: block)
-            timer.resume()
-            return timer
+        let timer = DispatchSource.makeTimerSource(queue: coordinatorQueue)
+        let ms = max(1, Int(interval * 1000))
+        let repeating = DispatchTimeInterval.milliseconds(ms)
+        timer.schedule(deadline: .now() + repeating, repeating: repeating, leeway: .milliseconds(100))
+        timer.setEventHandler { [weak self] in
+            self?.refreshAll(onCPU: onCPU, onRAM: onRAM, onGPU: onGPU, onNet: onNet)
         }
+        timer.resume()
+        timers = [timer]
+    }
 
-        timers = [
-            every(config.cpuInterval, queue: cpuQueue) { [weak self] in
+    private func refreshAll(onCPU: @escaping (CPUDetail) -> Void,
+                            onRAM: @escaping (RAMDetail) -> Void,
+                            onGPU: @escaping (GPUDetail) -> Void,
+                            onNet: @escaping (NetDetail) -> Void) {
+        if !cpuReadInFlight {
+            cpuReadInFlight = true
+            cpuQueue.async { [weak self] in
                 guard let self else { return }
                 let cpu = self.cpuReader.read()
                 DispatchQueue.main.async { onCPU(cpu) }
-            },
-            every(config.ramInterval, queue: ramQueue) { [weak self] in
+                self.coordinatorQueue.async { self.cpuReadInFlight = false }
+            }
+        }
+
+        if !ramReadInFlight {
+            ramReadInFlight = true
+            ramQueue.async { [weak self] in
                 guard let self else { return }
                 let ram = self.ramReader.read()
                 DispatchQueue.main.async { onRAM(ram) }
-            },
-            every(config.gpuInterval, queue: gpuQueue) { [weak self] in
+                self.coordinatorQueue.async { self.ramReadInFlight = false }
+            }
+        }
+
+        if !gpuReadInFlight {
+            gpuReadInFlight = true
+            gpuQueue.async { [weak self] in
                 guard let self else { return }
                 let gpu = self.gpuReader.read()
                 DispatchQueue.main.async { onGPU(gpu) }
-            },
-            every(config.powerInterval, queue: powerQueue) { [weak self] in
+                self.coordinatorQueue.async { self.gpuReadInFlight = false }
+            }
+        }
+
+        if !powerReadInFlight {
+            powerReadInFlight = true
+            powerQueue.async { [weak self] in
                 guard let self else { return }
                 let power = self.powerReader.read()
                 DispatchQueue.main.async { self.onPower(power) }
-            },
-            every(config.netInterval, queue: netQueue) { [weak self] in
+                self.coordinatorQueue.async { self.powerReadInFlight = false }
+            }
+        }
+
+        if !netReadInFlight {
+            netReadInFlight = true
+            netQueue.async { [weak self] in
                 guard let self else { return }
                 let net = self.netReader.read()
                 DispatchQueue.main.async { onNet(net) }
-            },
-        ]
+                self.coordinatorQueue.async { self.netReadInFlight = false }
+            }
+        }
     }
 
     func powerSourceChanged() {
         powerQueue.async { [weak self] in
             guard let self else { return }
             self.powerReader.invalidateChargingCache()
-            let power = self.powerReader.read()
-            DispatchQueue.main.async { self.onPower(power) }
         }
     }
 

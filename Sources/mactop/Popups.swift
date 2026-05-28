@@ -7,8 +7,7 @@ private let sepHeight: CGFloat     = 30
 private let rowHeight: CGFloat     = 22
 private let margins: CGFloat       = 8
 private let spacing: CGFloat       = 2
-private let fiveMinuteOneSecondSamples = 300
-private let fiveMinuteThreeSecondSamples = 100
+private let initialChartSamples = 2
 
 // MARK: - Shared field classes (matching Stats' LabelField / ValueField exactly)
 
@@ -357,7 +356,7 @@ final class CPUPopupView: NSStackView {
         lineBox.wantsLayer = true
         lineBox.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
         lineBox.layer?.cornerRadius = 3
-        lineChart = LineChartView(frame: NSRect(x: 1, y: 0, width: popupWidth - 2, height: chartContentH), num: fiveMinuteOneSecondSamples, fixedMax: 1)
+        lineChart = LineChartView(frame: NSRect(x: 1, y: 0, width: popupWidth - 2, height: chartContentH), num: initialChartSamples, fixedMax: 1)
         lineBox.addSubview(lineChart)
         view.addArrangedSubview(lineBox)
 
@@ -429,6 +428,7 @@ final class CPUPopupView: NSStackView {
         circle.setNonActiveSegmentColor(idleColor)
         circle.setValue(d.total)
 
+        lineChart.reinit(max(initialChartSamples, d.historyCapacity))
         lineChart.setValues(d.history)
 
         if !d.usagePerCore.isEmpty {
@@ -536,7 +536,7 @@ final class RAMPopupView: NSStackView {
         container.wantsLayer = true
         container.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
         container.layer?.cornerRadius = 3
-        lineChart = LineChartView(frame: NSRect(x: 1, y: 0, width: popupWidth - 2, height: chartH), num: fiveMinuteOneSecondSamples, fixedMax: 1)
+        lineChart = LineChartView(frame: NSRect(x: 1, y: 0, width: popupWidth - 2, height: chartH), num: initialChartSamples, fixedMax: 1)
         container.addSubview(lineChart)
         view.addSubview(container)
         return view
@@ -602,6 +602,7 @@ final class RAMPopupView: NSStackView {
 
         level.setActiveSegment(d.pressureLevel)
 
+        lineChart.reinit(max(initialChartSamples, d.historyCapacity))
         lineChart.setValues(d.history)
 
         processesView.setProcesses(processes) { v in fmtMemory(UInt64(v)) }
@@ -729,7 +730,7 @@ final class GPUPopupView: NSStackView {
     }
 
     private func addChart(id: String) {
-        let c = LineChartView(frame: NSRect(x: 0, y: 0, width: 100, height: chartSize), num: fiveMinuteThreeSecondSamples, fixedMax: 1)
+        let c = LineChartView(frame: NSRect(x: 0, y: 0, width: 100, height: chartSize), num: initialChartSamples, fixedMax: 1)
         c.id = id
         c.wantsLayer = true
         c.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
@@ -748,14 +749,17 @@ final class GPUPopupView: NSStackView {
 
         gpuCircle.setValue(d.total)
         gpuCircle.setText("\(Int((d.total * 100).rounded()))%")
+        gpuChart.reinit(max(initialChartSamples, d.historyCapacity))
         gpuChart.setValues(d.history)
 
         renderCircle.setValue(d.render)
         renderCircle.setText("\(Int((d.render * 100).rounded()))%")
+        renderChart.reinit(max(initialChartSamples, d.historyCapacity))
         renderChart.setValues(d.renderHistory)
 
         tilerCircle.setValue(d.tiler)
         tilerCircle.setText("\(Int((d.tiler * 100).rounded()))%")
+        tilerChart.reinit(max(initialChartSamples, d.historyCapacity))
         tilerChart.setValues(d.tilerHistory)
     }
 }
@@ -1082,7 +1086,7 @@ final class NetPopupView: NSStackView {
         container.layer?.cornerRadius = 3
         usageChart = NetworkChartView(
             frame: NSRect(x: 0, y: 1, width: popupWidth, height: chartH - 2),
-            num: fiveMinuteOneSecondSamples,
+            num: initialChartSamples,
             outColor: uploadColor, inColor: downloadColor
         )
         container.addSubview(usageChart)
@@ -1218,6 +1222,7 @@ final class NetPopupView: NSStackView {
         localIPField.stringValue  = d.localIP.isEmpty    ? "Unknown" : d.localIP
         publicIPField.stringValue = d.publicIP ?? "Fetching…"
 
+        usageChart.reinit(max(initialChartSamples, d.historyCapacity))
         usageChart.setValues(d.history)
     }
 }

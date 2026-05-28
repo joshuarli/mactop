@@ -16,69 +16,69 @@ private func smoothedValue(_ value: Double, previous: Double?, alpha: Double = g
 }
 
 private struct ScalarHistory {
-    private var values: [Float]
-    private var nextIndex = 0
-    private var isFull = false
+    private var entries: [(date: Date, value: Float)] = []
+    private let maxCount: Int
     private var smoothed: Double?
 
     init(capacity: Int) {
-        values = Array(repeating: 0, count: max(capacity, 1))
+        maxCount = max(capacity, 1)
+        entries.reserveCapacity(maxCount)
     }
+
+    var capacity: Int { maxCount }
 
     mutating func append(_ value: Double) {
         let value = smoothedValue(value, previous: smoothed)
         smoothed = value
-        values[nextIndex] = Float(value)
-        nextIndex = (nextIndex + 1) % values.count
-        if nextIndex == 0 { isFull = true }
+        entries.append((Date(), Float(value)))
+        prune()
+    }
+
+    private mutating func prune() {
+        let cutoff = Date().addingTimeInterval(-graphHistoryWindow)
+        entries.removeAll { $0.date < cutoff }
+        if entries.count > maxCount {
+            entries.removeFirst(entries.count - maxCount)
+        }
     }
 
     var orderedValues: [Double] {
-        let ordered: [Float]
-        if isFull {
-            ordered = Array(values[nextIndex..<values.count] + values[0..<nextIndex])
-        } else {
-            ordered = Array(values[0..<nextIndex])
-        }
-        return ordered.map(Double.init)
+        entries.map { Double($0.value) }
     }
 }
 
 private struct PairHistory {
-    private var upValues: [Float]
-    private var downValues: [Float]
-    private var nextIndex = 0
-    private var isFull = false
+    private var entries: [(date: Date, up: Float, down: Float)] = []
+    private let maxCount: Int
     private var smoothedUp: Double?
     private var smoothedDown: Double?
 
     init(capacity: Int) {
-        upValues = Array(repeating: 0, count: max(capacity, 1))
-        downValues = Array(repeating: 0, count: max(capacity, 1))
+        maxCount = max(capacity, 1)
+        entries.reserveCapacity(maxCount)
     }
+
+    var capacity: Int { maxCount }
 
     mutating func append(up: Double, down: Double) {
         let up = smoothedValue(up, previous: smoothedUp)
         let down = smoothedValue(down, previous: smoothedDown)
         smoothedUp = up
         smoothedDown = down
-        upValues[nextIndex] = Float(up)
-        downValues[nextIndex] = Float(down)
-        nextIndex = (nextIndex + 1) % upValues.count
-        if nextIndex == 0 { isFull = true }
+        entries.append((Date(), Float(up), Float(down)))
+        prune()
+    }
+
+    private mutating func prune() {
+        let cutoff = Date().addingTimeInterval(-graphHistoryWindow)
+        entries.removeAll { $0.date < cutoff }
+        if entries.count > maxCount {
+            entries.removeFirst(entries.count - maxCount)
+        }
     }
 
     var orderedValues: [(up: Double, down: Double)] {
-        let upOrdered: [Float]
-        let downOrdered: [Float]
-        if isFull {
-            upOrdered = Array(upValues[nextIndex..<upValues.count] + upValues[0..<nextIndex])
-            downOrdered = Array(downValues[nextIndex..<downValues.count] + downValues[0..<nextIndex])
-        } else {
-            upOrdered = Array(upValues[0..<nextIndex])
-            downOrdered = Array(downValues[0..<nextIndex])
-        }
-        return zip(upOrdered, downOrdered).map { (up: Double($0), down: Double($1)) }
+        entries.map { (up: Double($0.up), down: Double($0.down)) }
     }
 }
 
@@ -102,6 +102,7 @@ struct CPUDetail {
     var loadAvg15: Double
     var uptime: String
     var history: [Double]
+    var historyCapacity: Int
 }
 
 final class CPUReader {
@@ -133,7 +134,8 @@ final class CPUReader {
               let info else {
             return CPUDetail(total: 0, system: 0, user: 0, idle: 1, usagePerCore: [],
                              coreKinds: coreKinds,
-                             loadAvg1: 0, loadAvg5: 0, loadAvg15: 0, uptime: uptimeString(), history: history.orderedValues)
+                             loadAvg1: 0, loadAvg5: 0, loadAvg15: 0, uptime: uptimeString(),
+                             history: history.orderedValues, historyCapacity: history.capacity)
         }
         defer {
             vm_deallocate(mach_task_self_,
@@ -199,7 +201,8 @@ final class CPUReader {
             loadAvg5: loadAvgRaw[1],
             loadAvg15: loadAvgRaw[2],
             uptime: uptimeString(),
-            history: history.orderedValues
+            history: history.orderedValues,
+            historyCapacity: history.capacity
         )
     }
 
@@ -286,6 +289,7 @@ struct RAMDetail {
     var totalBytes: UInt64
     var pressureLevel: Int   // 0=normal, 1=warn, 2=critical
     var history: [Double]
+    var historyCapacity: Int
 }
 
 final class RAMReader {
@@ -312,7 +316,8 @@ final class RAMReader {
             }
         }) == KERN_SUCCESS else {
             return RAMDetail(total: 0, appBytes: 0, wiredBytes: 0, compressedBytes: 0,
-                             freeBytes: 0, swapBytes: 0, totalBytes: totalBytes, pressureLevel: 0, history: history.orderedValues)
+                             freeBytes: 0, swapBytes: 0, totalBytes: totalBytes, pressureLevel: 0,
+                             history: history.orderedValues, historyCapacity: history.capacity)
         }
 
         let page = UInt64(vm_page_size)
@@ -357,7 +362,8 @@ final class RAMReader {
             swapBytes: swap.xsu_used,
             totalBytes: totalBytes,
             pressureLevel: pressureLevel,
-            history: history.orderedValues
+            history: history.orderedValues,
+            historyCapacity: history.capacity
         )
     }
 }
@@ -372,6 +378,7 @@ struct GPUDetail {
     var history: [Double]
     var renderHistory: [Double]
     var tilerHistory: [Double]
+    var historyCapacity: Int
 }
 
 final class GPUReader {
@@ -442,7 +449,8 @@ final class GPUReader {
             model: Self.modelName,
             history: history.orderedValues,
             renderHistory: renderHistory.orderedValues,
-            tilerHistory: tilerHistory.orderedValues
+            tilerHistory: tilerHistory.orderedValues,
+            historyCapacity: history.capacity
         )
     }
 }
@@ -544,7 +552,13 @@ final class PowerReader {
 
     private struct PowerHistory {
         private var entries: [(date: Date, sample: PowerHistorySample)] = []
+        private let maxCount: Int
         private var smoothed: PowerHistorySample?
+
+        init(capacity: Int) {
+            maxCount = max(capacity, 1)
+            entries.reserveCapacity(maxCount)
+        }
 
         mutating func append(_ sample: PowerSample, at date: Date) {
             guard let rawHistorySample = sample.historySample else { return }
@@ -557,6 +571,9 @@ final class PowerReader {
         private mutating func prune(at date: Date) {
             let cutoff = date.addingTimeInterval(-graphHistoryWindow)
             entries.removeAll { $0.date < cutoff }
+            if entries.count > maxCount {
+                entries.removeFirst(entries.count - maxCount)
+            }
         }
 
         var values: [PowerHistorySample] { entries.map(\.sample) }
@@ -920,13 +937,17 @@ final class PowerReader {
     private var modeledPowerReaderAttempted = false
     private var modeledPowerReader: ModeledPowerReader?
     private let batteryPowerReader = BatteryPowerReader()
-    private var history = PowerHistory()
+    private var history: PowerHistory
     private var systemOverhead: Double?
     private var lastRawSystem: Double?
     private var cachedCharging: ChargingDetail?
     private var rawSystemLastRead = Date.distantPast
     private var current: PowerSample?
     private let chargingCacheInterval: TimeInterval = 2
+
+    init(updateInterval: Double = 1) {
+        history = PowerHistory(capacity: graphSampleCapacity(updateInterval: updateInterval))
+    }
 
     func invalidateChargingCache() {
         cachedCharging = nil
@@ -1023,6 +1044,7 @@ struct NetDetail {
     var transmitRate: Double      // Mbps from ifi_baudrate
     var isUp: Bool
     var history: [(up: Double, down: Double)]
+    var historyCapacity: Int
 }
 
 final class NetReader {
@@ -1058,7 +1080,8 @@ final class NetReader {
         guard getifaddrs(&ifap) == 0, let head = ifap else {
             return NetDetail(upload: 0, download: 0, totalUp: cumulativeUp, totalDown: cumulativeDown,
                              interfaceName: "", displayName: "", macAddress: "", ssid: nil,
-                             localIP: "", publicIP: lockedPublicIP(), transmitRate: 0, isUp: false, history: history.orderedValues)
+                             localIP: "", publicIP: lockedPublicIP(), transmitRate: 0, isUp: false,
+                             history: history.orderedValues, historyCapacity: history.capacity)
         }
         defer { freeifaddrs(head) }
 
@@ -1174,7 +1197,8 @@ final class NetReader {
             publicIP: lockedPublicIP(),
             transmitRate: cachedTransmitRate,
             isUp: isUp,
-            history: history.orderedValues
+            history: history.orderedValues,
+            historyCapacity: history.capacity
         )
     }
 
