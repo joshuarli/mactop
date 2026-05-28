@@ -119,6 +119,9 @@ final class CPUReader {
     }()
     private var cachedUptimeMinute = -1
     private var cachedUptime = "Unknown"
+    private var cachedLoadAvg = [Double](repeating: 0, count: 3)
+    private var loadAvgLastRead = Date.distantPast
+    private let loadAvgCacheInterval: TimeInterval = 5
 
     init(updateInterval: Double = 1) {
         history = ScalarHistory(capacity: graphSampleCapacity(updateInterval: updateInterval))
@@ -144,6 +147,7 @@ final class CPUReader {
         }
 
         var ticks: [Tick] = []
+        ticks.reserveCapacity(Int(cpuCount))
         for i in 0..<Int(cpuCount) {
             let b = i * Int(CPU_STATE_MAX)
             ticks.append(Tick(
@@ -158,6 +162,7 @@ final class CPUReader {
         var systemUsage = 0.0
         var userUsage = 0.0
         var perCore: [Double] = []
+        perCore.reserveCapacity(ticks.count)
 
         if prev.count == ticks.count {
             for i in 0..<ticks.count {
@@ -187,8 +192,7 @@ final class CPUReader {
         let total = min(1, max(0, totalUsage))
         history.append(total)
 
-        var loadAvgRaw = [Double](repeating: 0, count: 3)
-        getloadavg(&loadAvgRaw, 3)
+        let loadAvg = loadAverage()
 
         return CPUDetail(
             total: total,
@@ -197,9 +201,9 @@ final class CPUReader {
             idle: min(1, max(0, 1 - totalUsage)),
             usagePerCore: perCore,
             coreKinds: coreKinds,
-            loadAvg1: loadAvgRaw[0],
-            loadAvg5: loadAvgRaw[1],
-            loadAvg15: loadAvgRaw[2],
+            loadAvg1: loadAvg[0],
+            loadAvg5: loadAvg[1],
+            loadAvg15: loadAvg[2],
             uptime: uptimeString(),
             history: history.orderedValues,
             historyCapacity: history.capacity
@@ -213,6 +217,16 @@ final class CPUReader {
         cachedUptimeMinute = minute
         cachedUptime = uptimeFormatter.string(from: TimeInterval(elapsed)) ?? "Unknown"
         return cachedUptime
+    }
+
+    private func loadAverage() -> [Double] {
+        let now = Date()
+        guard now.timeIntervalSince(loadAvgLastRead) >= loadAvgCacheInterval else {
+            return cachedLoadAvg
+        }
+        loadAvgLastRead = now
+        getloadavg(&cachedLoadAvg, 3)
+        return cachedLoadAvg
     }
 
     private static let bootDate: Date = {
@@ -339,6 +353,10 @@ final class RAMReader {
         return n
     }()
     private var history: ScalarHistory
+    private var cachedSwapBytes: UInt64 = 0
+    private var cachedPressureLevel = 0
+    private var slowStatsLastRead = Date.distantPast
+    private let slowStatsCacheInterval: TimeInterval = 5
 
     init(updateInterval: Double = 1) {
         history = ScalarHistory(capacity: graphSampleCapacity(updateInterval: updateInterval))
@@ -375,19 +393,7 @@ final class RAMReader {
         let app  = used > wired + compressed ? used - wired - compressed : 0
         let free = totalBytes > used ? totalBytes - used : 0
 
-        var swap: xsw_usage = xsw_usage()
-        var swapSize = MemoryLayout<xsw_usage>.size
-        sysctlbyname("vm.swapusage", &swap, &swapSize, nil, 0)
-
-        var pressureRaw: Int32 = 0
-        var pressureSize = MemoryLayout<Int32>.size
-        sysctlbyname("kern.memorystatus_vm_pressure_level", &pressureRaw, &pressureSize, nil, 0)
-        let pressureLevel: Int
-        switch pressureRaw {
-        case 4: pressureLevel = 2
-        case 2: pressureLevel = 1
-        default: pressureLevel = 0
-        }
+        refreshSlowStatsIfNeeded()
 
         let fraction = totalBytes > 0 ? min(1, Double(used) / Double(totalBytes)) : 0
         history.append(fraction)
@@ -398,12 +404,34 @@ final class RAMReader {
             wiredBytes: wired,
             compressedBytes: compressed,
             freeBytes: free,
-            swapBytes: swap.xsu_used,
+            swapBytes: cachedSwapBytes,
             totalBytes: totalBytes,
-            pressureLevel: pressureLevel,
+            pressureLevel: cachedPressureLevel,
             history: history.orderedValues,
             historyCapacity: history.capacity
         )
+    }
+
+    private func refreshSlowStatsIfNeeded() {
+        let now = Date()
+        guard now.timeIntervalSince(slowStatsLastRead) >= slowStatsCacheInterval else { return }
+        slowStatsLastRead = now
+
+        var swap = xsw_usage()
+        var swapSize = MemoryLayout<xsw_usage>.size
+        if sysctlbyname("vm.swapusage", &swap, &swapSize, nil, 0) == 0 {
+            cachedSwapBytes = swap.xsu_used
+        }
+
+        var pressureRaw: Int32 = 0
+        var pressureSize = MemoryLayout<Int32>.size
+        if sysctlbyname("kern.memorystatus_vm_pressure_level", &pressureRaw, &pressureSize, nil, 0) == 0 {
+            switch pressureRaw {
+            case 4: cachedPressureLevel = 2
+            case 2: cachedPressureLevel = 1
+            default: cachedPressureLevel = 0
+            }
+        }
     }
 }
 
@@ -427,12 +455,19 @@ final class GPUReader {
     private var total: Double = 0
     private var render: Double = 0
     private var tiler: Double = 0
+    private var acceleratorService: io_object_t = 0
 
     init(updateInterval: Double = 3) {
         let capacity = graphSampleCapacity(updateInterval: updateInterval)
         history = ScalarHistory(capacity: capacity)
         renderHistory = ScalarHistory(capacity: capacity)
         tilerHistory = ScalarHistory(capacity: capacity)
+    }
+
+    deinit {
+        if acceleratorService != 0 {
+            IOObjectRelease(acceleratorService)
+        }
     }
 
     // Read once — brand string never changes at runtime
@@ -445,6 +480,15 @@ final class GPUReader {
     }()
 
     func read() -> GPUDetail {
+        if readCachedService() {
+            return detail()
+        }
+
+        if acceleratorService != 0 {
+            IOObjectRelease(acceleratorService)
+            acceleratorService = 0
+        }
+
         var iterator: io_iterator_t = 0
         guard IOServiceGetMatchingServices(
             kIOMainPortDefault,
@@ -456,28 +500,37 @@ final class GPUReader {
         while true {
             let service = IOIteratorNext(iterator)
             guard service != 0 else { break }
-            defer { IOObjectRelease(service) }
-
-            var props: Unmanaged<CFMutableDictionary>?
-            guard IORegistryEntryCreateCFProperties(service, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS,
-                  let dict = props?.takeRetainedValue() as? [String: Any],
-                  let perf = dict["PerformanceStatistics"] as? [String: Any] else { continue }
-
-            // Intel uses "Device Utilization %", Apple Silicon uses "GPU Activity(%)"
-            let pct = perf["Device Utilization %"] as? Double
-                   ?? perf["GPU Activity(%)"] as? Double
-                   ?? 0
-            total = pct / 100.0
-            render = (perf["Renderer Utilization %"] as? Double ?? 0) / 100.0
-            tiler = (perf["Tiler Utilization %"]   as? Double ?? 0) / 100.0
-
-            history.append(total)
-            renderHistory.append(render)
-            tilerHistory.append(tiler)
-
-            return detail()
+            if read(service: service) {
+                acceleratorService = service
+                return detail()
+            }
+            IOObjectRelease(service)
         }
         return detail()
+    }
+
+    private func readCachedService() -> Bool {
+        acceleratorService != 0 && read(service: acceleratorService)
+    }
+
+    private func read(service: io_object_t) -> Bool {
+        var props: Unmanaged<CFMutableDictionary>?
+        guard IORegistryEntryCreateCFProperties(service, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+              let dict = props?.takeRetainedValue() as? [String: Any],
+              let perf = dict["PerformanceStatistics"] as? [String: Any] else { return false }
+
+        // Intel uses "Device Utilization %", Apple Silicon uses "GPU Activity(%)"
+        let pct = perf["Device Utilization %"] as? Double
+               ?? perf["GPU Activity(%)"] as? Double
+               ?? 0
+        total = pct / 100.0
+        render = (perf["Renderer Utilization %"] as? Double ?? 0) / 100.0
+        tiler = (perf["Tiler Utilization %"]   as? Double ?? 0) / 100.0
+
+        history.append(total)
+        renderHistory.append(render)
+        tilerHistory.append(tiler)
+        return true
     }
 
     private func detail() -> GPUDetail {
