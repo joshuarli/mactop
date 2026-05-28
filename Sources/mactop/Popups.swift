@@ -294,6 +294,9 @@ final class CPUPopupView: NSStackView {
     private let systemColor = NSColor.systemRed
     private let userColor   = NSColor.systemBlue
     private let idleColor   = NSColor.lightGray
+    private let performanceCoreColor = NSColor.systemOrange
+    private let efficiencyCoreColor = NSColor.systemTeal.withAlphaComponent(0.38)
+    private let unknownCoreColor = NSColor.controlAccentColor.withAlphaComponent(0.75)
 
     private var circle: PieChartView!
     private var lineChart: LineChartView!
@@ -436,12 +439,12 @@ final class CPUPopupView: NSStackView {
                 let color: NSColor
                 if d.coreKinds.indices.contains(idx) {
                     switch d.coreKinds[idx] {
-                    case .efficiency: color = .systemTeal
-                    case .performance: color = .systemIndigo
-                    case .unknown: color = .controlAccentColor
+                    case .efficiency: color = efficiencyCoreColor
+                    case .performance: color = performanceCoreColor
+                    case .unknown: color = unknownCoreColor
                     }
                 } else {
-                    color = .controlAccentColor
+                    color = unknownCoreColor
                 }
                 return ColorValue(value, color: color)
             }

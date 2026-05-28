@@ -253,9 +253,11 @@ final class CPUReader {
                 guard IORegistryEntryCreateCFProperties(child, &unmanagedProperties, kCFAllocatorDefault, 0) == KERN_SUCCESS,
                       let properties = unmanagedProperties?.takeRetainedValue() as? [String: Any] else { continue }
 
-                let id = (properties["cpu-id"] as? Data)?.withUnsafeBytes { $0.load(as: Int32.self) } ?? Int32(cores.count)
+                let id = Self.cpuID(from: properties["logical-cpu-id"])
+                    ?? Self.cpuID(from: properties["cpu-id"])
+                    ?? Int32(cores.count)
                 let rawType = (properties["cluster-type"] as? Data).flatMap { String(data: $0, encoding: .utf8) }?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters))
                 let kind: CPUCoreKind
                 switch rawType {
                 case "E": kind = .efficiency
@@ -267,13 +269,50 @@ final class CPUReader {
         }
 
         let maxID = cores.map(\.id).max() ?? -1
-        guard maxID >= 0 else { return [] }
+        guard maxID >= 0 else { return fallbackCoreKinds() }
 
         var kinds = Array(repeating: CPUCoreKind.unknown, count: Int(maxID) + 1)
         for core in cores where core.id >= 0 {
             kinds[Int(core.id)] = core.kind
         }
+        if kinds.allSatisfy({ $0 == .unknown }) {
+            return fallbackCoreKinds()
+        }
         return kinds
+    }
+
+    private static func cpuID(from value: Any?) -> Int32? {
+        if let value = value as? Int32 { return value }
+        if let value = value as? Int { return Int32(value) }
+        guard let data = value as? Data, !data.isEmpty else { return nil }
+        var result: Int32 = 0
+        for (shift, byte) in data.prefix(4).enumerated() {
+            result |= Int32(byte) << Int32(shift * 8)
+        }
+        return result
+    }
+
+    private static func fallbackCoreKinds() -> [CPUCoreKind] {
+        let performanceCount = perfLevelCPUCount(named: "Performance")
+        let efficiencyCount = perfLevelCPUCount(named: "Efficiency")
+        guard efficiencyCount > 0 || performanceCount > 0 else { return [] }
+        return Array(repeating: .efficiency, count: efficiencyCount)
+            + Array(repeating: .performance, count: performanceCount)
+    }
+
+    private static func perfLevelCPUCount(named name: String) -> Int {
+        for level in 0..<4 {
+            var nameBuffer = [CChar](repeating: 0, count: 64)
+            var nameSize = nameBuffer.count
+            guard sysctlbyname("hw.perflevel\(level).name", &nameBuffer, &nameSize, nil, 0) == 0,
+                  String(cString: nameBuffer) == name else { continue }
+
+            var count: Int32 = 0
+            var countSize = MemoryLayout<Int32>.size
+            guard sysctlbyname("hw.perflevel\(level).physicalcpu", &count, &countSize, nil, 0) == 0 else { return 0 }
+            return max(0, Int(count))
+        }
+        return 0
     }
 }
 

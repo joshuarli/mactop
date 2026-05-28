@@ -338,11 +338,11 @@ final class ColumnChartView: NSView {
         var x: CGFloat = 0
 
         for v in values {
+            let color = v.color ?? .controlAccentColor
             let partition = NSBezierPath(roundedRect: NSRect(x: x, y: 0, width: partW, height: partH), xRadius: 3, yRadius: 3)
-            NSColor.underPageBackgroundColor.withAlphaComponent(0.5).setFill()
+            color.withAlphaComponent(0.07).setFill()
             partition.fill()
 
-            let color = v.color ?? .controlAccentColor
             let activeBlocks = Int(round(v.value * Double(blocks)))
 
             if dirtyRect.height < 30 && v.value != 0 {
@@ -353,7 +353,7 @@ final class ColumnChartView: NSView {
                 var y: CGFloat = spacing
                 for b in 0..<blocks {
                     let block = NSBezierPath(roundedRect: NSRect(x: x+spacing, y: y, width: blockW, height: blockH), xRadius: 1, yRadius: 1)
-                    (activeBlocks <= b ? NSColor.controlBackgroundColor.withAlphaComponent(0.4) : color).setFill()
+                    (activeBlocks <= b ? color.withAlphaComponent(0.14) : color).setFill()
                     block.fill()
                     y += blockH + 1
                 }
