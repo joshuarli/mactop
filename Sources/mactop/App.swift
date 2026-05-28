@@ -19,6 +19,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var cpuView: MiniView!
     private var ramView: MiniView!
     private var gpuView: MiniView!
+    private var powerView: PowerView!
     private var netView: SpeedView!
     private var monitor: SystemMonitor!
     private var detailTimer: DispatchSourceTimer?
@@ -32,11 +33,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var cpuPopupView: CPUPopupView!
     private var ramPopupView: RAMPopupView!
     private var gpuPopupView: GPUPopupView!
+    private var powerPopupView: PowerPopupView!
     private var netPopupView: NetPopupView!
 
     private var cpuPanel: PopupPanel!
     private var ramPanel: PopupPanel!
     private var gpuPanel: PopupPanel!
+    private var powerPanel: PopupPanel!
     private var netPanel: PopupPanel!
     private var statusPanels: [PopupPanel] = []
 
@@ -44,6 +47,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var latestCPU: CPUDetail?
     private var latestRAM: RAMDetail?
     private var latestGPU: GPUDetail?
+    private var latestPower: PowerDetail?
     private var latestNet: NetDetail?
     private var latestCPUProcesses: [TopProcess] = []
     private var latestRAMProcesses: [TopProcess] = []
@@ -59,16 +63,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         cpuView = MiniView(label: "CPU")
         ramView = MiniView(label: "RAM")
         gpuView = MiniView(label: "GPU")
+        powerView = PowerView()
         netView = SpeedView()
 
         cpuPopupView = CPUPopupView()
         ramPopupView = RAMPopupView()
         gpuPopupView = GPUPopupView()
+        powerPopupView = PowerPopupView()
         netPopupView = NetPopupView()
 
         cpuPanel = PopupPanel(contentView: cpuPopupView)
         ramPanel = PopupPanel(contentView: ramPopupView)
         gpuPanel = PopupPanel(contentView: gpuPopupView)
+        powerPanel = PopupPanel(contentView: powerPopupView)
         netPanel = PopupPanel(contentView: netPopupView)
 
         let entries: [(view: NSView, width: CGFloat, panel: PopupPanel)] = [
@@ -76,6 +83,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             (cpuView!, 31, cpuPanel),
             (ramView!, 31, ramPanel),
             (gpuView!, 31, gpuPanel),
+            (powerView!, 40, powerPanel),
         ]
         for entry in entries {
             let view = entry.view
@@ -116,6 +124,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.gpuView.value = gpu.total
                 if self.gpuPanel.isVisible {
                     self.gpuPopupView.update(gpu)
+                }
+            },
+            onPower: { [weak self] power in
+                guard let self else { return }
+                self.latestPower = power
+                self.powerView.watts = power.total
+                if self.powerPanel.isVisible {
+                    self.powerPopupView.update(power)
                 }
             },
             onNet: { [weak self] net in
@@ -275,6 +291,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if let latestGPU {
                 gpuPopupView.update(latestGPU, syncHistory: syncHistory)
             }
+        case 4:
+            if let latestPower {
+                powerPopupView.update(latestPower, syncHistory: syncHistory)
+            }
         default:
             break
         }
@@ -285,10 +305,12 @@ final class SystemMonitor {
     private let cpuReader        = CPUReader()
     private let ramReader        = RAMReader()
     private let gpuReader        = GPUReader()
+    private let powerReader      = PowerReader()
     private let netReader        = NetReader()
     private let cpuQueue = DispatchQueue(label: "mactop.monitor.cpu", qos: .utility)
     private let ramQueue = DispatchQueue(label: "mactop.monitor.ram", qos: .utility)
     private let gpuQueue = DispatchQueue(label: "mactop.monitor.gpu", qos: .utility)
+    private let powerQueue = DispatchQueue(label: "mactop.monitor.power", qos: .utility)
     private let netQueue = DispatchQueue(label: "mactop.monitor.net", qos: .utility)
     private var timers: [DispatchSourceTimer] = []
 
@@ -296,6 +318,7 @@ final class SystemMonitor {
          onCPU: @escaping (CPUDetail) -> Void,
          onRAM: @escaping (RAMDetail) -> Void,
          onGPU: @escaping (GPUDetail) -> Void,
+         onPower: @escaping (PowerDetail) -> Void,
          onNet: @escaping (NetDetail) -> Void) {
 
         cpuQueue.sync { _ = cpuReader.read() }
@@ -326,6 +349,11 @@ final class SystemMonitor {
                 guard let self else { return }
                 let gpu = self.gpuReader.read()
                 DispatchQueue.main.async { onGPU(gpu) }
+            },
+            every(config.powerInterval, queue: powerQueue) { [weak self] in
+                guard let self else { return }
+                let power = self.powerReader.read()
+                DispatchQueue.main.async { onPower(power) }
             },
             every(config.netInterval, queue: netQueue) { [weak self] in
                 guard let self else { return }

@@ -6,12 +6,14 @@ import Foundation
 // Configure with: defaults write com.mactop CPU_updateInterval 2
 // Keys mirror Stats: CPU_updateInterval, RAM_updateInterval,
 //                    GPU_updateInterval, Network_updateInterval
+// mactop also supports Power_updateInterval for the PWR widget.
 
 struct Config {
     var cpuInterval: Double
     var ramInterval: Double
     var gpuInterval: Double
     var netInterval: Double
+    var powerInterval: Double
 
     static let bundleID = "com.mactop"
 
@@ -29,7 +31,8 @@ struct Config {
             cpuInterval: seconds(key: "CPU_updateInterval",     fallback: 1),
             ramInterval: seconds(key: "RAM_updateInterval",     fallback: 1),
             gpuInterval: seconds(key: "GPU_updateInterval",     fallback: 3),
-            netInterval: seconds(key: "Network_updateInterval", fallback: 1)
+            netInterval: seconds(key: "Network_updateInterval", fallback: 1),
+            powerInterval: seconds(key: "Power_updateInterval", fallback: 1)
         )
     }
 }

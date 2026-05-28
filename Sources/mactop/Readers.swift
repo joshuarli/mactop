@@ -417,6 +417,409 @@ final class GPUReader {
     }
 }
 
+// MARK: - Power
+
+struct PowerDetail {
+    var total: Double?
+    var system: Double?
+    var soc: Double?
+    var cpu: Double?
+    var gpu: Double?
+    var ane: Double?
+    var memory: Double?
+    var media: Double?
+    var display: Double?
+    var other: Double?
+    var totalHistory: [Double]
+    var socHistory: [Double]
+    var cpuHistory: [Double]
+    var gpuHistory: [Double]
+    var aneHistory: [Double]
+    var memoryHistory: [Double]
+    var mediaHistory: [Double]
+    var displayHistory: [Double]
+    var otherHistory: [Double]
+}
+
+final class PowerReader {
+    private struct PowerSample {
+        var cpu: Double
+        var gpu: Double
+        var ane: Double
+        var memory: Double
+        var media: Double
+        var display: Double
+        var other: Double
+        var system: Double?
+        var hasSoC: Bool
+        var soc: Double { cpu + gpu + ane + memory + media + display + other }
+        var total: Double { system ?? soc }
+    }
+
+    private final class IOReportPowerSampler {
+        private struct API {
+            typealias CopyChannelsInGroup = @convention(c) (UnsafeRawPointer?, UnsafeRawPointer?, UInt64, UInt64, UInt64) -> UnsafeRawPointer?
+            typealias CreateSubscription = @convention(c) (UnsafeRawPointer?, UnsafeRawPointer?, UnsafeMutablePointer<UnsafeRawPointer?>?, UInt64, UnsafeRawPointer?) -> UnsafeRawPointer?
+            typealias CreateSamples = @convention(c) (UnsafeRawPointer?, UnsafeRawPointer?, UnsafeRawPointer?) -> UnsafeRawPointer?
+            typealias CreateSamplesDelta = @convention(c) (UnsafeRawPointer?, UnsafeRawPointer?, UnsafeRawPointer?) -> UnsafeRawPointer?
+            typealias MergeChannels = @convention(c) (UnsafeRawPointer?, UnsafeRawPointer?, UnsafeRawPointer?) -> Void
+            typealias ChannelString = @convention(c) (UnsafeRawPointer?) -> UnsafeRawPointer?
+            typealias SimpleIntegerValue = @convention(c) (UnsafeRawPointer?, Int32) -> Int64
+
+            var handle: UnsafeMutableRawPointer
+            var copyChannelsInGroup: CopyChannelsInGroup
+            var createSubscription: CreateSubscription
+            var createSamples: CreateSamples
+            var createSamplesDelta: CreateSamplesDelta
+            var mergeChannels: MergeChannels
+            var channelGetGroup: ChannelString
+            var channelGetSubGroup: ChannelString
+            var channelGetChannelName: ChannelString
+            var channelGetUnitLabel: ChannelString
+            var simpleGetIntegerValue: SimpleIntegerValue
+        }
+
+        private let api: API
+        private let channels: CFMutableDictionary
+        private let subscription: UnsafeRawPointer
+        private var previousSample: (sample: CFDictionary, time: Date)?
+
+        init?() {
+            guard let api = Self.loadAPI(),
+                  let channels = Self.copyPowerChannels(api: api) else { return nil }
+
+            var returnedChannels: UnsafeRawPointer?
+            let channelsPtr = Unmanaged.passUnretained(channels).toOpaque()
+            guard let subscription = api.createSubscription(nil, channelsPtr, &returnedChannels, 0, nil) else { return nil }
+
+            self.api = api
+            self.channels = channels
+            self.subscription = subscription
+        }
+
+        deinit {
+            Unmanaged<AnyObject>.fromOpaque(subscription).release()
+            dlclose(api.handle)
+        }
+
+        func readPower() -> PowerSample? {
+            guard let next = rawSample() else { return nil }
+            guard let previous = previousSample else {
+                previousSample = next
+                return nil
+            }
+
+            let elapsed = next.time.timeIntervalSince(previous.time)
+            previousSample = next
+            guard elapsed > 0 else { return nil }
+
+            let previousPtr = Unmanaged.passUnretained(previous.sample).toOpaque()
+            let nextPtr = Unmanaged.passUnretained(next.sample).toOpaque()
+            guard let deltaPtr = api.createSamplesDelta(previousPtr, nextPtr, nil) else { return nil }
+            let delta = Unmanaged<CFDictionary>.fromOpaque(deltaPtr).takeRetainedValue()
+
+            return parsePower(delta: delta, elapsed: elapsed)
+        }
+
+        private func rawSample() -> (sample: CFDictionary, time: Date)? {
+            let subscriptionPtr = UnsafeRawPointer(subscription)
+            let channelsPtr = Unmanaged.passUnretained(channels).toOpaque()
+            guard let samplePtr = api.createSamples(subscriptionPtr, channelsPtr, nil) else { return nil }
+            let sample = Unmanaged<CFDictionary>.fromOpaque(samplePtr).takeRetainedValue()
+            return (sample, Date())
+        }
+
+        private func parsePower(delta: CFDictionary, elapsed: TimeInterval) -> PowerSample? {
+            let key = "IOReportChannels" as CFString
+            guard let arrayPtr = CFDictionaryGetValue(delta, Unmanaged.passUnretained(key).toOpaque()) else { return nil }
+            let array = Unmanaged<CFArray>.fromOpaque(arrayPtr).takeUnretainedValue()
+            let count = CFArrayGetCount(array)
+
+            var cpu = 0.0
+            var gpu = 0.0
+            var ane = 0.0
+            var memory = 0.0
+            var media = 0.0
+            var display = 0.0
+            var other = 0.0
+            var found = false
+
+            for i in 0..<count {
+                guard let item = CFArrayGetValueAtIndex(array, i) else { continue }
+
+                let group = cfString(api.channelGetGroup(item))
+                let subgroup = cfString(api.channelGetSubGroup(item))
+                let channel = cfString(api.channelGetChannelName(item))
+                let unit = cfString(api.channelGetUnitLabel(item)).trimmingCharacters(in: .whitespacesAndNewlines)
+
+                if group == "Energy Model" {
+                    guard let watts = watts(item: item, unit: unit, elapsed: elapsed) else { continue }
+                    switch channel {
+                    case "GPU Energy":
+                        gpu += watts
+                        found = true
+                    case let name where name.hasSuffix("CPU Energy"):
+                        cpu += watts
+                        found = true
+                    case let name where name.hasPrefix("ANE"):
+                        ane += watts
+                        found = true
+                    case let name where name.hasPrefix("DRAM") || name.hasPrefix("AMCC") || name.hasPrefix("GPU SRAM"):
+                        memory += watts
+                        found = true
+                    case let name where name.hasPrefix("DCS"):
+                        display += watts
+                        found = true
+                    case let name where name.hasPrefix("AVE") || name.hasPrefix("ISP") || name.hasPrefix("MSR"):
+                        media += watts
+                        found = true
+                    case let name where name.contains("PCIe") || name.hasPrefix("apciec"):
+                        other += watts
+                        found = true
+                    default:
+                        continue
+                    }
+                } else if group.hasPrefix("DCP"), subgroup == "display stats", channel == "power" {
+                    display += Double(api.simpleGetIntegerValue(item, 0)) / 1_000_000 / elapsed
+                    found = true
+                }
+            }
+
+            guard found else { return nil }
+            return PowerSample(cpu: cpu, gpu: gpu, ane: ane, memory: memory, media: media, display: display, other: other, system: nil, hasSoC: true)
+        }
+
+        private func watts(item: UnsafeRawPointer, unit: String, elapsed: TimeInterval) -> Double? {
+            let value = Double(api.simpleGetIntegerValue(item, 0))
+            let joules: Double
+            switch unit {
+            case "mJ": joules = value / 1_000
+            case "uJ": joules = value / 1_000_000
+            case "nJ": joules = value / 1_000_000_000
+            default: return nil
+            }
+            return max(0, joules / elapsed)
+        }
+
+        private func cfString(_ pointer: UnsafeRawPointer?) -> String {
+            guard let pointer else { return "" }
+            return Unmanaged<CFString>.fromOpaque(pointer).takeUnretainedValue() as String
+        }
+
+        private static func loadAPI() -> API? {
+            let paths = [
+                "/usr/lib/libIOReport.dylib",
+                "libIOReport.dylib",
+                "/System/Library/PrivateFrameworks/IOReport.framework/IOReport",
+                "IOReport",
+            ]
+
+            guard let handle = paths.lazy.compactMap({ dlopen($0, RTLD_LAZY) }).first else { return nil }
+
+            guard let copyChannelsInGroup = symbol(handle, "IOReportCopyChannelsInGroup", as: API.CopyChannelsInGroup.self),
+                  let createSubscription = symbol(handle, "IOReportCreateSubscription", as: API.CreateSubscription.self),
+                  let createSamples = symbol(handle, "IOReportCreateSamples", as: API.CreateSamples.self),
+                  let createSamplesDelta = symbol(handle, "IOReportCreateSamplesDelta", as: API.CreateSamplesDelta.self),
+                  let mergeChannels = symbol(handle, "IOReportMergeChannels", as: API.MergeChannels.self),
+                  let channelGetGroup = symbol(handle, "IOReportChannelGetGroup", as: API.ChannelString.self),
+                  let channelGetSubGroup = symbol(handle, "IOReportChannelGetSubGroup", as: API.ChannelString.self),
+                  let channelGetChannelName = symbol(handle, "IOReportChannelGetChannelName", as: API.ChannelString.self),
+                  let channelGetUnitLabel = symbol(handle, "IOReportChannelGetUnitLabel", as: API.ChannelString.self),
+                  let simpleGetIntegerValue = symbol(handle, "IOReportSimpleGetIntegerValue", as: API.SimpleIntegerValue.self) else {
+                dlclose(handle)
+                return nil
+            }
+
+            return API(
+                handle: handle,
+                copyChannelsInGroup: copyChannelsInGroup,
+                createSubscription: createSubscription,
+                createSamples: createSamples,
+                createSamplesDelta: createSamplesDelta,
+                mergeChannels: mergeChannels,
+                channelGetGroup: channelGetGroup,
+                channelGetSubGroup: channelGetSubGroup,
+                channelGetChannelName: channelGetChannelName,
+                channelGetUnitLabel: channelGetUnitLabel,
+                simpleGetIntegerValue: simpleGetIntegerValue
+            )
+        }
+
+        private static func symbol<T>(_ handle: UnsafeMutableRawPointer, _ name: String, as type: T.Type) -> T? {
+            guard let pointer = dlsym(handle, name) else { return nil }
+            return unsafeBitCast(pointer, to: type)
+        }
+
+        private static func copyPowerChannels(api: API) -> CFMutableDictionary? {
+            let groupNames = ["Energy Model", "DCP", "DCPEXT0", "DCPEXT1"]
+            var dictionaries: [CFDictionary] = []
+            for groupName in groupNames {
+                let group = groupName as CFString
+                let groupPtr = Unmanaged.passUnretained(group).toOpaque()
+                guard let rawPtr = api.copyChannelsInGroup(groupPtr, nil, 0, 0, 0) else { continue }
+                dictionaries.append(Unmanaged<CFDictionary>.fromOpaque(rawPtr).takeRetainedValue())
+            }
+
+            guard let first = dictionaries.first,
+                  let channels = CFDictionaryCreateMutableCopy(kCFAllocatorDefault, CFDictionaryGetCount(first), first) else { return nil }
+
+            let channelsPtr = Unmanaged.passUnretained(channels).toOpaque()
+            for dictionary in dictionaries.dropFirst() {
+                api.mergeChannels(channelsPtr, Unmanaged.passUnretained(dictionary).toOpaque(), nil)
+            }
+
+            let key = "IOReportChannels" as CFString
+            guard CFDictionaryGetValue(channels, Unmanaged.passUnretained(key).toOpaque()) != nil else { return nil }
+            return channels
+        }
+    }
+
+    private final class SystemPowerReader {
+        func read() -> Double? {
+            let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
+            guard service != 0 else { return nil }
+            defer { IOObjectRelease(service) }
+
+            var unmanagedProperties: Unmanaged<CFMutableDictionary>?
+            guard IORegistryEntryCreateCFProperties(service, &unmanagedProperties, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+                  let properties = unmanagedProperties?.takeRetainedValue() as? [String: Any] else { return nil }
+
+            if let telemetry = properties["PowerTelemetryData"] as? [String: Any] {
+                if let power = numeric(telemetry["SystemPowerIn"]), power > 0 {
+                    return power / 1_000
+                }
+                if let current = numeric(telemetry["SystemCurrentIn"]),
+                   let voltage = numeric(telemetry["SystemVoltageIn"]),
+                   current > 0, voltage > 0 {
+                    return (current * voltage) / 1_000_000
+                }
+                if let power = numeric(telemetry["SystemLoad"]), power > 0 {
+                    return power / 1_000
+                }
+                if let power = numeric(telemetry["BatteryPower"]), power != 0 {
+                    return abs(power) / 1_000
+                }
+            }
+
+            let voltage = numeric(properties["Voltage"]) ?? numeric(properties["AppleRawBatteryVoltage"]) ?? 0
+            let amperage = numeric(properties["InstantAmperage"]) ?? numeric(properties["Amperage"]) ?? 0
+            guard voltage > 0, amperage != 0 else { return nil }
+            return abs(voltage * amperage) / 1_000_000
+        }
+
+        private func numeric(_ value: Any?) -> Double? {
+            switch value {
+            case let number as NSNumber:
+                return number.doubleValue
+            case let value as Int:
+                return Double(value)
+            case let value as Int64:
+                return Double(value)
+            case let value as UInt64:
+                return Double(value)
+            case let value as Double:
+                return value
+            default:
+                return nil
+            }
+        }
+    }
+
+    private var samplerAttempted = false
+    private var sampler: IOReportPowerSampler?
+    private let systemPowerReader = SystemPowerReader()
+    private var totalHistory = ScalarHistory(capacity: 180)
+    private var socHistory = ScalarHistory(capacity: 180)
+    private var cpuHistory = ScalarHistory(capacity: 180)
+    private var gpuHistory = ScalarHistory(capacity: 180)
+    private var aneHistory = ScalarHistory(capacity: 180)
+    private var memoryHistory = ScalarHistory(capacity: 180)
+    private var mediaHistory = ScalarHistory(capacity: 180)
+    private var displayHistory = ScalarHistory(capacity: 180)
+    private var otherHistory = ScalarHistory(capacity: 180)
+    private var systemOverhead: Double?
+    private var lastRawSystem: Double?
+    private var current: PowerSample?
+
+    func read() -> PowerDetail {
+        if !samplerAttempted {
+            sampler = IOReportPowerSampler()
+            samplerAttempted = true
+        }
+
+        let rawSystem = systemPowerReader.read()
+        if let sample = sampler?.readPower() {
+            if let rawSystem, (lastRawSystem != rawSystem || systemOverhead == nil) {
+                systemOverhead = max(0, rawSystem - sample.soc)
+                lastRawSystem = rawSystem
+            }
+            let system = systemOverhead.map { sample.soc + $0 } ?? rawSystem
+            current = PowerSample(
+                cpu: sample.cpu,
+                gpu: sample.gpu,
+                ane: sample.ane,
+                memory: sample.memory,
+                media: sample.media,
+                display: sample.display,
+                other: sample.other,
+                system: system,
+                hasSoC: true
+            )
+        } else if let current, current.system != rawSystem {
+            self.current = PowerSample(
+                cpu: current.cpu,
+                gpu: current.gpu,
+                ane: current.ane,
+                memory: current.memory,
+                media: current.media,
+                display: current.display,
+                other: current.other,
+                system: rawSystem,
+                hasSoC: current.hasSoC
+            )
+        } else if current == nil, rawSystem != nil {
+            current = PowerSample(cpu: 0, gpu: 0, ane: 0, memory: 0, media: 0, display: 0, other: 0, system: rawSystem, hasSoC: false)
+        }
+
+        if let sample = current {
+            totalHistory.append(sample.total)
+            if sample.hasSoC {
+                socHistory.append(sample.soc)
+                cpuHistory.append(sample.cpu)
+                gpuHistory.append(sample.gpu)
+                aneHistory.append(sample.ane)
+                memoryHistory.append(sample.memory)
+                mediaHistory.append(sample.media)
+                displayHistory.append(sample.display)
+                otherHistory.append(sample.other)
+            }
+        }
+
+        let hasSoC = current?.hasSoC == true
+        return PowerDetail(
+            total: current?.total,
+            system: current?.system,
+            soc: hasSoC ? current?.soc : nil,
+            cpu: hasSoC ? current?.cpu : nil,
+            gpu: hasSoC ? current?.gpu : nil,
+            ane: hasSoC ? current?.ane : nil,
+            memory: hasSoC ? current?.memory : nil,
+            media: hasSoC ? current?.media : nil,
+            display: hasSoC ? current?.display : nil,
+            other: hasSoC ? current?.other : nil,
+            totalHistory: totalHistory.orderedValues,
+            socHistory: socHistory.orderedValues,
+            cpuHistory: cpuHistory.orderedValues,
+            gpuHistory: gpuHistory.orderedValues,
+            aneHistory: aneHistory.orderedValues,
+            memoryHistory: memoryHistory.orderedValues,
+            mediaHistory: mediaHistory.orderedValues,
+            displayHistory: displayHistory.orderedValues,
+            otherHistory: otherHistory.orderedValues
+        )
+    }
+}
+
 // MARK: - Network
 
 struct NetDetail {

@@ -778,6 +778,143 @@ final class GPUPopupView: NSStackView {
     }
 }
 
+// MARK: - Power Popup
+
+final class PowerPopupView: NSStackView {
+    private let cpuColor = NSColor.systemOrange
+    private let gpuColor = NSColor.systemPurple
+    private let aneColor = NSColor.systemTeal
+    private let memoryColor = NSColor.systemGreen
+    private let mediaColor = NSColor.systemBlue
+    private let displayColor = NSColor.systemYellow
+    private let otherColor = NSColor.systemGray
+    private let systemColor = NSColor.secondaryLabelColor
+
+    private var systemValue: ValueField!
+    private var socValue: ValueField!
+    private var cpuValue: ValueField!
+    private var gpuValue: ValueField!
+    private var aneValue: ValueField!
+    private var memoryValue: ValueField!
+    private var mediaValue: ValueField!
+    private var displayValue: ValueField!
+    private var otherValue: ValueField!
+    private var chart: StackedPowerChartView!
+
+    init() {
+        super.init(frame: NSRect(x: 0, y: 0, width: popupWidth, height: 0))
+        orientation = .vertical
+        spacing = 0
+        wantsLayer = true
+        layer?.cornerRadius = 2
+
+        addArrangedSubview(separatorView("Power"))
+        initRows()
+        addArrangedSubview(initChart())
+        recalcHeight()
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func updateLayer() {
+        layer?.backgroundColor = (isDarkMode
+            ? NSColor(red: 17/255, green: 17/255, blue: 17/255, alpha: 0.25)
+            : NSColor(red: 245/255, green: 245/255, blue: 245/255, alpha: 1)).cgColor
+    }
+
+    private func recalcHeight() {
+        let h = arrangedSubviews.reduce(0.0) { $0 + $1.bounds.height }
+        setFrameSize(NSSize(width: popupWidth, height: h))
+    }
+
+    private func initRows() {
+        (_, systemValue, _) = popupRow(self, title: "System", value: "--W")
+        (_, socValue, _) = popupRow(self, title: "SoC", value: "--W")
+        (_, _, cpuValue) = popupWithColorRow(self, color: cpuColor, title: "CPU", value: "--W")
+        (_, _, gpuValue) = popupWithColorRow(self, color: gpuColor, title: "GPU", value: "--W")
+        (_, _, aneValue) = popupWithColorRow(self, color: aneColor, title: "ANE", value: "--W")
+        (_, _, memoryValue) = popupWithColorRow(self, color: memoryColor, title: "Memory", value: "--W")
+        (_, _, mediaValue) = popupWithColorRow(self, color: mediaColor, title: "Media", value: "--W")
+        (_, _, displayValue) = popupWithColorRow(self, color: displayColor, title: "Display", value: "--W")
+        (_, _, otherValue) = popupWithColorRow(self, color: otherColor, title: "Other SoC", value: "--W")
+    }
+
+    private func initChart() -> NSView {
+        let chartH: CGFloat = 120
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: chartH))
+        view.heightAnchor.constraint(equalToConstant: chartH).isActive = true
+
+        chart = StackedPowerChartView(
+            frame: NSRect(x: margins, y: margins, width: popupWidth - margins*2, height: chartH - margins*2),
+            num: 180,
+            cpuColor: cpuColor,
+            gpuColor: gpuColor,
+            aneColor: aneColor,
+            memoryColor: memoryColor,
+            mediaColor: mediaColor,
+            displayColor: displayColor,
+            otherColor: otherColor,
+            systemColor: systemColor
+        )
+        chart.wantsLayer = true
+        chart.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
+        chart.layer?.cornerRadius = 3
+        view.addSubview(chart)
+        return view
+    }
+
+    func update(_ d: PowerDetail, syncHistory: Bool = false) {
+        systemValue.stringValue = fmtPower(d.system)
+        socValue.stringValue = fmtPower(d.soc)
+        cpuValue.stringValue = fmtPower(d.cpu)
+        gpuValue.stringValue = fmtPower(d.gpu)
+        aneValue.stringValue = fmtPower(d.ane)
+        memoryValue.stringValue = fmtPower(d.memory)
+        mediaValue.stringValue = fmtPower(d.media)
+        displayValue.stringValue = fmtPower(d.display)
+        otherValue.stringValue = fmtPower(d.other)
+
+        guard let cpu = d.cpu,
+              let gpu = d.gpu,
+              let ane = d.ane,
+              let memory = d.memory,
+              let media = d.media,
+              let display = d.display,
+              let other = d.other else {
+            if syncHistory {
+                chart.setValues(system: [], cpu: [], gpu: [], ane: [], memory: [], media: [], display: [], other: [])
+            }
+            return
+        }
+
+        let system = d.total ?? cpu + gpu + ane + memory + media + display + other
+        if syncHistory {
+            chart.setValues(
+                system: d.totalHistory,
+                cpu: d.cpuHistory,
+                gpu: d.gpuHistory,
+                ane: d.aneHistory,
+                memory: d.memoryHistory,
+                media: d.mediaHistory,
+                display: d.displayHistory,
+                other: d.otherHistory
+            )
+        } else {
+            chart.addValue(system: system, cpu: cpu, gpu: gpu, ane: ane, memory: memory, media: media, display: display, other: other)
+        }
+    }
+
+    private func fmtPower(_ watts: Double?) -> String {
+        guard let watts else { return "--W" }
+        switch watts {
+        case ..<10:
+            return String(format: "%.1f W", watts)
+        default:
+            return String(format: "%.0f W", watts)
+        }
+    }
+}
+
 // MARK: - Net Popup
 // Matches Stats Net popup: dashboard (large up/down values) + usage history +
 // details + interface + address

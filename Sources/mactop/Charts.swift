@@ -430,6 +430,172 @@ final class NetworkChartView: NSView {
     }
 }
 
+// MARK: - StackedPowerChartView
+
+final class StackedPowerChartView: NSView {
+    private struct Sample {
+        var system: Double
+        var cpu: Double
+        var gpu: Double
+        var ane: Double
+        var memory: Double
+        var media: Double
+        var display: Double
+        var other: Double
+    }
+
+    private var samples: [Sample?]
+    private var nextSampleIndex = 0
+    private var samplesAreFull = false
+    private let cpuColor: NSColor
+    private let gpuColor: NSColor
+    private let aneColor: NSColor
+    private let memoryColor: NSColor
+    private let mediaColor: NSColor
+    private let displayColor: NSColor
+    private let otherColor: NSColor
+    private let systemColor: NSColor
+
+    init(frame: NSRect, num: Int, cpuColor: NSColor, gpuColor: NSColor, aneColor: NSColor, memoryColor: NSColor, mediaColor: NSColor, displayColor: NSColor, otherColor: NSColor, systemColor: NSColor) {
+        samples = Array(repeating: nil, count: max(num, 1))
+        self.cpuColor = cpuColor
+        self.gpuColor = gpuColor
+        self.aneColor = aneColor
+        self.memoryColor = memoryColor
+        self.mediaColor = mediaColor
+        self.displayColor = displayColor
+        self.otherColor = otherColor
+        self.systemColor = systemColor
+        super.init(frame: frame)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let values = orderedSamples().compactMap { $0 }
+        guard let ctx = NSGraphicsContext.current?.cgContext, values.count > 1 else { return }
+
+        ctx.setShouldAntialias(true)
+
+        let totalMax = max(values.map(\.system).max() ?? 0, 1)
+        let width = frame.width
+        let height = frame.height
+        let xRatio = width / CGFloat(values.count - 1)
+
+        func y(_ watts: Double) -> CGFloat {
+            CGFloat(watts / totalMax) * height
+        }
+
+        func drawBand(bottom: [Double], top: [Double], color: NSColor) {
+            guard bottom.count == top.count, top.count > 1 else { return }
+            let path = NSBezierPath()
+            path.move(to: CGPoint(x: 0, y: y(top[0])))
+            for i in 1..<top.count {
+                path.line(to: CGPoint(x: CGFloat(i) * xRatio, y: y(top[i])))
+            }
+            for i in stride(from: bottom.count - 1, through: 0, by: -1) {
+                path.line(to: CGPoint(x: CGFloat(i) * xRatio, y: y(bottom[i])))
+            }
+            path.close()
+
+            color.withAlphaComponent(0.45).setFill()
+            path.fill()
+
+            let line = NSBezierPath()
+            line.move(to: CGPoint(x: 0, y: y(top[0])))
+            for i in 1..<top.count {
+                line.line(to: CGPoint(x: CGFloat(i) * xRatio, y: y(top[i])))
+            }
+            color.setStroke()
+            line.lineWidth = 1 / (NSScreen.main?.backingScaleFactor ?? 1)
+            line.stroke()
+        }
+
+        let cpuTop = values.map(\.cpu)
+        let gpuTop = values.map { $0.cpu + $0.gpu }
+        let aneTop = values.map { $0.cpu + $0.gpu + $0.ane }
+        let memoryTop = values.map { $0.cpu + $0.gpu + $0.ane + $0.memory }
+        let mediaTop = values.map { $0.cpu + $0.gpu + $0.ane + $0.memory + $0.media }
+        let displayTop = values.map { $0.cpu + $0.gpu + $0.ane + $0.memory + $0.media + $0.display }
+        let otherTop = values.map { $0.cpu + $0.gpu + $0.ane + $0.memory + $0.media + $0.display + $0.other }
+        let systemTop = values.map(\.system)
+        let zero = Array(repeating: 0.0, count: values.count)
+
+        drawBand(bottom: otherTop, top: systemTop, color: systemColor)
+        drawBand(bottom: zero, top: cpuTop, color: cpuColor)
+        drawBand(bottom: cpuTop, top: gpuTop, color: gpuColor)
+        drawBand(bottom: gpuTop, top: aneTop, color: aneColor)
+        drawBand(bottom: aneTop, top: memoryTop, color: memoryColor)
+        drawBand(bottom: memoryTop, top: mediaTop, color: mediaColor)
+        drawBand(bottom: mediaTop, top: displayTop, color: displayColor)
+        drawBand(bottom: displayTop, top: otherTop, color: otherColor)
+    }
+
+    func addValue(system: Double, cpu: Double, gpu: Double, ane: Double, memory: Double, media: Double, display: Double, other: Double) {
+        guard !samples.isEmpty else { return }
+        let soc = cpu + gpu + ane + memory + media + display + other
+        samples[nextSampleIndex] = Sample(system: max(system, soc), cpu: cpu, gpu: gpu, ane: ane, memory: memory, media: media, display: display, other: other)
+        nextSampleIndex = (nextSampleIndex + 1) % samples.count
+        if nextSampleIndex == 0 { samplesAreFull = true }
+        if window?.isVisible ?? false {
+            self.display()
+        } else {
+            needsDisplay = true
+        }
+    }
+
+    func setValues(system: [Double], cpu: [Double], gpu: [Double], ane: [Double], memory: [Double], media: [Double], display: [Double], other: [Double]) {
+        samples = Array(repeating: nil, count: samples.count)
+        nextSampleIndex = 0
+        samplesAreFull = false
+
+        let count = min(system.count, cpu.count, gpu.count, ane.count, memory.count, media.count, display.count, other.count, samples.count)
+        guard count > 0 else {
+            needsDisplay = true
+            return
+        }
+
+        let systemSlice = Array(system.suffix(count))
+        let cpuSlice = Array(cpu.suffix(count))
+        let gpuSlice = Array(gpu.suffix(count))
+        let aneSlice = Array(ane.suffix(count))
+        let memorySlice = Array(memory.suffix(count))
+        let mediaSlice = Array(media.suffix(count))
+        let displaySlice = Array(display.suffix(count))
+        let otherSlice = Array(other.suffix(count))
+        for i in 0..<count {
+            let soc = cpuSlice[i] + gpuSlice[i] + aneSlice[i] + memorySlice[i] + mediaSlice[i] + displaySlice[i] + otherSlice[i]
+            samples[nextSampleIndex] = Sample(
+                system: max(systemSlice[i], soc),
+                cpu: cpuSlice[i],
+                gpu: gpuSlice[i],
+                ane: aneSlice[i],
+                memory: memorySlice[i],
+                media: mediaSlice[i],
+                display: displaySlice[i],
+                other: otherSlice[i]
+            )
+            nextSampleIndex = (nextSampleIndex + 1) % samples.count
+            if nextSampleIndex == 0 { samplesAreFull = true }
+        }
+
+        if window?.isVisible ?? false {
+            self.display()
+        } else {
+            needsDisplay = true
+        }
+    }
+
+    private func orderedSamples() -> [Sample?] {
+        guard !samples.isEmpty else { return [] }
+        if samplesAreFull {
+            return Array(samples[nextSampleIndex..<samples.count] + samples[0..<nextSampleIndex])
+        }
+        return Array(repeating: nil, count: samples.count - nextSampleIndex) + samples[0..<nextSampleIndex]
+    }
+}
+
 // MARK: - GridChartView
 // Connectivity history grid. Faithful port.
 

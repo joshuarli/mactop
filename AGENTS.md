@@ -7,9 +7,9 @@
 Core files:
 
 - `App.swift`: app lifecycle, `NSStatusItem` registration, popup routing, timers, and `SystemMonitor`.
-- `Views.swift`: small menu-bar drawing views for CPU/RAM/GPU and network speed.
+- `Views.swift`: small menu-bar drawing views for CPU/RAM/GPU, power, and network speed.
 - `Popups.swift`: popup panels and detailed dashboard views.
-- `Readers.swift`: CPU, RAM, GPU, and interface-level network readers.
+- `Readers.swift`: CPU, RAM, GPU, power, and interface-level network readers.
 - `Processes.swift`: top-process readers for CPU, RAM, and network.
 - `Charts.swift`: popup chart views.
 - `Config.swift`: reads optional update intervals from `UserDefaults`.
@@ -77,17 +77,18 @@ Use the debug binary for profiling unless the user explicitly asks for release m
    rm -rf traces
    ```
 
-When interpreting results, ignore launch-only dyld/AppKit setup unless optimizing startup. For idle discipline, look for work outside sleeping run loops: private `NetworkStatistics` callbacks while the network popup is hidden, repeated `SCDynamicStoreCopyValue`, IOKit GPU polling, status-item drawing allocations, formatter creation, `String(format:)`, array shifting, and full-list process sorting.
+When interpreting results, ignore launch-only dyld/AppKit setup unless optimizing startup. For idle discipline, look for work outside sleeping run loops: private `NetworkStatistics` callbacks while the network popup is hidden, repeated `SCDynamicStoreCopyValue`, IOKit GPU polling, IOReport power polling, status-item drawing allocations, formatter creation, `String(format:)`, array shifting, and full-list process sorting.
 
 ## Runtime Flow
 
-`AppDelegate.applicationDidFinishLaunching` creates four status items: network, CPU, RAM, GPU. The network item is registered first so macOS is less likely to hide it when menu-bar space is tight. `statusPanels` must stay in the same order as `statusItems`, because click routing uses the index.
+`AppDelegate.applicationDidFinishLaunching` creates five status items: network, CPU, RAM, GPU, PWR. The network item is registered first so macOS is less likely to hide it when menu-bar space is tight. PWR is registered after GPU. `statusPanels` must stay in the same order as `statusItems`, because click routing uses the index.
 
 `SystemMonitor` owns the core readers and schedules interval timers:
 
 - CPU totals: `CPUReader.read()`
 - RAM totals: `RAMReader.read()`
 - GPU: `GPUReader.read()`
+- Power: `PowerReader.read()`
 - Network totals: `NetReader.read()`
 
 Top-process readers are separate and visible-only. `AppDelegate` refreshes CPU, RAM, and network process lists on utility queues when the matching popup is visible or opened. Network process reporting lazily initializes the private `NetworkStatistics.framework` reader so hidden idle does not pay for callbacks.
@@ -115,6 +116,22 @@ RAM totals use Mach VM statistics and `sysctl`. RAM top processes use `proc_pid_
 **Known gap:** cross-user processes (WindowServer, root daemons) are absent from the RAM top list. `proc_pid_rusage` and `proc_pidinfo(PROC_PIDTASKINFO)` both return zero for non-root callers on modern macOS, so those processes are silently skipped. A `/usr/bin/top` subprocess fallback (analogous to the CPU ps path) could close this gap if it ever matters.
 
 GPU uses IOKit `IOAccelerator` performance statistics.
+
+Power uses two sources:
+
+**System power** (preferred menu-bar total on MacBooks):
+- `PowerReader.SystemPowerReader` reads `AppleSmartBattery` from IOKit.
+- `PowerTelemetryData.SystemPowerIn` is preferred, falling back to `SystemCurrentIn * SystemVoltageIn`, `SystemLoad`, `BatteryPower`, then raw battery `Voltage * InstantAmperage`/`Amperage`.
+- This is intended to represent whole-machine input/draw and includes power outside the SoC: display panel/backlight, radios, storage, USB/Thunderbolt, PMIC/conversion losses, charging/battery behavior, fans where present, and other board rails.
+- `AppleSmartBattery` telemetry can update slowly or stay cached for seconds/minutes on AC/full battery. Keep a System-minus-modeled baseline from that source, then let the live modeled subtotal move within it so menu-bar System power responds to fast IOReport changes.
+- This source may be unavailable on desktops or unusual battery states; in that case PWR falls back to SoC power.
+
+**SoC power** (component breakdown):
+- `PowerReader.IOReportPowerSampler` dynamically loads private `IOReport` with `dlopen`, trying `/usr/lib/libIOReport.dylib`, `libIOReport.dylib`, the old private framework path, then `IOReport`. Do not link IOReport in `Package.swift`.
+- It subscribes to `Energy Model` plus DCP display-report groups, samples twice, deltas counters with real elapsed time, and converts `mJ`/`uJ`/`nJ` to watts.
+- Channel mapping: `GPU Energy` → GPU; names ending in `CPU Energy` → CPU; names starting with `ANE` → ANE; names starting with `DRAM`, `AMCC`, or `GPU SRAM` → Memory; names starting with `DCS` → Display; DCP/DCPEXT `display stats` `power` deltas are treated as live display power; names starting with `AVE`, `ISP`, or `MSR` → Media; names containing `PCIe` or starting with `apciec` → Other SoC.
+- Avoid summing detailed CPU/GPU subrails such as `PACC*_CPU*`, `PCPUDTL*`, and similar detail channels into totals; they overlap with aggregate CPU/GPU energy channels and would double-count.
+- It is normal for System power to be considerably higher than modeled component power. The modeled subtotal is not board power. The PWR popup should keep System and the modeled subtotal separate and graph System as the outer total with the component stack inside it, so the System-minus-modeled delta is visible. Keep Display and Media as separate chart bands; do not collapse them into Other SoC after computing them as separate rows.
 
 Network interface totals use `getifaddrs` and sum `en*` interface byte counters. Interface metadata uses SystemConfiguration. Public IP is fetched asynchronously from `https://api.ipify.org`.
 

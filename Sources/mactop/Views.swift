@@ -50,6 +50,56 @@ final class MiniView: NSView {
     }
 }
 
+// MARK: - Power widget
+
+final class PowerView: NSView {
+    private let labelString: NSAttributedString
+    private var valueString: NSAttributedString
+    private var displayedValue = "--W"
+
+    var watts: Double? = nil {
+        didSet {
+            let text = watts.map(Self.fmtWatts) ?? "--W"
+            guard text != displayedValue else { return }
+            displayedValue = text
+            valueString = NSAttributedString(string: text, attributes: Self.valueAttrs)
+            needsDisplay = true
+        }
+    }
+
+    private static let labelAttrs: [NSAttributedString.Key: Any] = [
+        .font: NSFont.systemFont(ofSize: 7, weight: .light),
+        .foregroundColor: NSColor.labelColor,
+    ]
+
+    private static let valueAttrs: [NSAttributedString.Key: Any] = [
+        .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
+        .foregroundColor: NSColor.labelColor,
+    ]
+
+    override init(frame: NSRect) {
+        labelString = NSAttributedString(string: "PWR", attributes: Self.labelAttrs)
+        valueString = NSAttributedString(string: "--W", attributes: Self.valueAttrs)
+        super.init(frame: frame)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let w = bounds.width
+        labelString.draw(with: CGRect(x: 0, y: 12, width: w, height: 7))
+        valueString.draw(with: CGRect(x: 0, y: 1, width: w, height: 13))
+    }
+
+    private static func fmtWatts(_ watts: Double) -> String {
+        switch watts {
+        case ..<10:
+            return String(format: "%.1fW", watts)
+        default:
+            return String(format: "%.0fW", watts)
+        }
+    }
+}
+
 // MARK: - Speed widget (Network)
 // Mirrors Stats' SpeedWidget drawTwoRows() with icon="dots", displayValueState="oi":
 //   top row = upload (red dot), bottom row = download (blue dot).
