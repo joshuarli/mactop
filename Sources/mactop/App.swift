@@ -346,7 +346,7 @@ final class SystemMonitor {
          onPower: @escaping (PowerDetail) -> Void,
          onNet: @escaping (NetDetail) -> Void) {
 
-        let interval = config.syncedInterval
+        let interval = config.updateInterval
         cpuReader = CPUReader(updateInterval: interval)
         ramReader = RAMReader(updateInterval: interval)
         gpuReader = GPUReader(updateInterval: interval)

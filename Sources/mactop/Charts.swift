@@ -470,17 +470,17 @@ final class StackedPowerChartView: NSView {
 
         ctx.setShouldAntialias(true)
 
-        let totalMax = max(values.map(\.total).max() ?? 0, 1)
         let width = frame.width
         let height = frame.height
         let xRatio = width / CGFloat(values.count - 1)
 
-        func y(_ watts: Double) -> CGFloat {
-            CGFloat(watts / totalMax) * height
-        }
-
-        func drawBand(bottom: [Double], top: [Double], color: NSColor) {
+        func drawBand(bottom: [Double], top: [Double], color: NSColor, scaleMax: Double, fillAlpha: CGFloat = 0.45, strokeAlpha: CGFloat = 1) {
             guard bottom.count == top.count, top.count > 1 else { return }
+
+            func y(_ watts: Double) -> CGFloat {
+                CGFloat(watts / scaleMax) * height
+            }
+
             let path = NSBezierPath()
             path.move(to: CGPoint(x: 0, y: y(top[0])))
             for i in 1..<top.count {
@@ -491,7 +491,7 @@ final class StackedPowerChartView: NSView {
             }
             path.close()
 
-            color.withAlphaComponent(0.45).setFill()
+            color.withAlphaComponent(fillAlpha).setFill()
             path.fill()
 
             let line = NSBezierPath()
@@ -499,7 +499,7 @@ final class StackedPowerChartView: NSView {
             for i in 1..<top.count {
                 line.line(to: CGPoint(x: CGFloat(i) * xRatio, y: y(top[i])))
             }
-            color.setStroke()
+            color.withAlphaComponent(strokeAlpha).setStroke()
             line.lineWidth = 1 / (NSScreen.main?.backingScaleFactor ?? 1)
             line.stroke()
         }
@@ -513,15 +513,16 @@ final class StackedPowerChartView: NSView {
         let otherTop = values.map { $0.cpu + $0.gpu + $0.ane + $0.memory + $0.media + $0.display + $0.other }
         let systemTop = values.map(\.total)
         let zero = Array(repeating: 0.0, count: values.count)
+        let systemMax = max(systemTop.max() ?? 0, 1)
 
-        drawBand(bottom: otherTop, top: systemTop, color: systemColor)
-        drawBand(bottom: zero, top: cpuTop, color: cpuColor)
-        drawBand(bottom: cpuTop, top: gpuTop, color: gpuColor)
-        drawBand(bottom: gpuTop, top: aneTop, color: aneColor)
-        drawBand(bottom: aneTop, top: memoryTop, color: memoryColor)
-        drawBand(bottom: memoryTop, top: mediaTop, color: mediaColor)
-        drawBand(bottom: mediaTop, top: displayTop, color: displayColor)
-        drawBand(bottom: displayTop, top: otherTop, color: otherColor)
+        drawBand(bottom: zero, top: systemTop, color: systemColor, scaleMax: systemMax, fillAlpha: 0.16, strokeAlpha: 0.55)
+        drawBand(bottom: zero, top: cpuTop, color: cpuColor, scaleMax: systemMax)
+        drawBand(bottom: cpuTop, top: gpuTop, color: gpuColor, scaleMax: systemMax)
+        drawBand(bottom: gpuTop, top: aneTop, color: aneColor, scaleMax: systemMax)
+        drawBand(bottom: aneTop, top: memoryTop, color: memoryColor, scaleMax: systemMax)
+        drawBand(bottom: memoryTop, top: mediaTop, color: mediaColor, scaleMax: systemMax)
+        drawBand(bottom: mediaTop, top: displayTop, color: displayColor, scaleMax: systemMax)
+        drawBand(bottom: displayTop, top: otherTop, color: otherColor, scaleMax: systemMax)
     }
 
     func setValues(_ values: [PowerHistorySample]) {
