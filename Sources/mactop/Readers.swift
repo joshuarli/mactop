@@ -3,16 +3,31 @@ import Foundation
 import IOKit
 import SystemConfiguration
 
+private let graphHistoryWindow: TimeInterval = 5 * 60
+private let graphSmoothingAlpha = 0.3
+
+private func graphSampleCapacity(updateInterval: Double) -> Int {
+    max(2, Int(ceil(graphHistoryWindow / max(updateInterval, 1))))
+}
+
+private func smoothedValue(_ value: Double, previous: Double?, alpha: Double = graphSmoothingAlpha) -> Double {
+    guard let previous else { return value }
+    return alpha * value + (1 - alpha) * previous
+}
+
 private struct ScalarHistory {
     private var values: [Float]
     private var nextIndex = 0
     private var isFull = false
+    private var smoothed: Double?
 
     init(capacity: Int) {
         values = Array(repeating: 0, count: max(capacity, 1))
     }
 
     mutating func append(_ value: Double) {
+        let value = smoothedValue(value, previous: smoothed)
+        smoothed = value
         values[nextIndex] = Float(value)
         nextIndex = (nextIndex + 1) % values.count
         if nextIndex == 0 { isFull = true }
@@ -34,6 +49,8 @@ private struct PairHistory {
     private var downValues: [Float]
     private var nextIndex = 0
     private var isFull = false
+    private var smoothedUp: Double?
+    private var smoothedDown: Double?
 
     init(capacity: Int) {
         upValues = Array(repeating: 0, count: max(capacity, 1))
@@ -41,6 +58,10 @@ private struct PairHistory {
     }
 
     mutating func append(up: Double, down: Double) {
+        let up = smoothedValue(up, previous: smoothedUp)
+        let down = smoothedValue(down, previous: smoothedDown)
+        smoothedUp = up
+        smoothedDown = down
         upValues[nextIndex] = Float(up)
         downValues[nextIndex] = Float(down)
         nextIndex = (nextIndex + 1) % upValues.count
@@ -86,7 +107,7 @@ struct CPUDetail {
 final class CPUReader {
     private struct Tick { var user, sys, idle, nice: Double }
     private var prev: [Tick] = []
-    private var history = ScalarHistory(capacity: 180)
+    private var history: ScalarHistory
     private let coreKinds = CPUReader.readCoreKinds()
     private let uptimeFormatter: DateComponentsFormatter = {
         let form = DateComponentsFormatter()
@@ -97,6 +118,10 @@ final class CPUReader {
     }()
     private var cachedUptimeMinute = -1
     private var cachedUptime = "Unknown"
+
+    init(updateInterval: Double = 1) {
+        history = ScalarHistory(capacity: graphSampleCapacity(updateInterval: updateInterval))
+    }
 
     func read() -> CPUDetail {
         var info: processor_info_array_t?
@@ -270,7 +295,11 @@ final class RAMReader {
         sysctlbyname("hw.memsize", &n, &size, nil, 0)
         return n
     }()
-    private var history = ScalarHistory(capacity: 180)
+    private var history: ScalarHistory
+
+    init(updateInterval: Double = 1) {
+        history = ScalarHistory(capacity: graphSampleCapacity(updateInterval: updateInterval))
+    }
 
     func read() -> RAMDetail {
         var stats = vm_statistics64()
@@ -346,14 +375,19 @@ struct GPUDetail {
 }
 
 final class GPUReader {
-    private var history = ScalarHistory(capacity: 120)
-    private var renderHistory = ScalarHistory(capacity: 120)
-    private var tilerHistory = ScalarHistory(capacity: 120)
-    // EMA smoothing matches Stats' visually calm GPU graph
-    private var emaTotal:  Double = 0
-    private var emaRender: Double = 0
-    private var emaTiler:  Double = 0
-    private let alpha = 0.3
+    private var history: ScalarHistory
+    private var renderHistory: ScalarHistory
+    private var tilerHistory: ScalarHistory
+    private var total: Double = 0
+    private var render: Double = 0
+    private var tiler: Double = 0
+
+    init(updateInterval: Double = 3) {
+        let capacity = graphSampleCapacity(updateInterval: updateInterval)
+        history = ScalarHistory(capacity: capacity)
+        renderHistory = ScalarHistory(capacity: capacity)
+        tilerHistory = ScalarHistory(capacity: capacity)
+    }
 
     // Read once — brand string never changes at runtime
     private static let modelName: String = {
@@ -387,17 +421,13 @@ final class GPUReader {
             let pct = perf["Device Utilization %"] as? Double
                    ?? perf["GPU Activity(%)"] as? Double
                    ?? 0
-            let rawTotal  = pct / 100.0
-            let rawRender = (perf["Renderer Utilization %"] as? Double ?? 0) / 100.0
-            let rawTiler  = (perf["Tiler Utilization %"]   as? Double ?? 0) / 100.0
+            total = pct / 100.0
+            render = (perf["Renderer Utilization %"] as? Double ?? 0) / 100.0
+            tiler = (perf["Tiler Utilization %"]   as? Double ?? 0) / 100.0
 
-            emaTotal  = alpha * rawTotal  + (1 - alpha) * emaTotal
-            emaRender = alpha * rawRender + (1 - alpha) * emaRender
-            emaTiler  = alpha * rawTiler  + (1 - alpha) * emaTiler
-
-            history.append(emaTotal)
-            renderHistory.append(emaRender)
-            tilerHistory.append(emaTiler)
+            history.append(total)
+            renderHistory.append(render)
+            tilerHistory.append(tiler)
 
             return detail()
         }
@@ -406,9 +436,9 @@ final class GPUReader {
 
     private func detail() -> GPUDetail {
         GPUDetail(
-            total: emaTotal,
-            render: emaRender,
-            tiler: emaTiler,
+            total: total,
+            render: render,
+            tiler: tiler,
             model: Self.modelName,
             history: history.orderedValues,
             renderHistory: renderHistory.orderedValues,
@@ -444,6 +474,21 @@ struct PowerHistorySample: Equatable {
     var media: Double
     var display: Double
     var other: Double
+
+    func smoothed(after previous: PowerHistorySample?) -> PowerHistorySample {
+        guard let previous else { return self }
+        return PowerHistorySample(
+            total: smoothedValue(total, previous: previous.total),
+            modeled: smoothedValue(modeled, previous: previous.modeled),
+            cpu: smoothedValue(cpu, previous: previous.cpu),
+            gpu: smoothedValue(gpu, previous: previous.gpu),
+            ane: smoothedValue(ane, previous: previous.ane),
+            memory: smoothedValue(memory, previous: previous.memory),
+            media: smoothedValue(media, previous: previous.media),
+            display: smoothedValue(display, previous: previous.display),
+            other: smoothedValue(other, previous: previous.other)
+        )
+    }
 }
 
 struct ChargingDetail {
@@ -499,16 +544,18 @@ final class PowerReader {
 
     private struct PowerHistory {
         private var entries: [(date: Date, sample: PowerHistorySample)] = []
-        private let window: TimeInterval = 10 * 60
+        private var smoothed: PowerHistorySample?
 
         mutating func append(_ sample: PowerSample, at date: Date) {
-            guard let historySample = sample.historySample else { return }
+            guard let rawHistorySample = sample.historySample else { return }
+            let historySample = rawHistorySample.smoothed(after: smoothed)
+            smoothed = historySample
             entries.append((date, historySample))
             prune(at: date)
         }
 
         private mutating func prune(at date: Date) {
-            let cutoff = date.addingTimeInterval(-window)
+            let cutoff = date.addingTimeInterval(-graphHistoryWindow)
             entries.removeAll { $0.date < cutoff }
         }
 
@@ -984,7 +1031,7 @@ final class NetReader {
     private var cumulativeUp: UInt64 = 0
     private var cumulativeDown: UInt64 = 0
     private var lastTime = Date()
-    private var history = PairHistory(capacity: 180)
+    private var history: PairHistory
     private let dynamicStore = SCDynamicStoreCreate(nil, "mactop" as CFString, nil, nil)
     private var primaryInterfaceLastRead = Date.distantPast
     private var cachedPrimaryInterface: String? = nil
@@ -1000,6 +1047,10 @@ final class NetReader {
     private var publicIPLastFetch = Date.distantPast
     private var cachedPublicIP: String? = nil
     private let publicIPLock = NSLock()
+
+    init(updateInterval: Double = 1) {
+        history = PairHistory(capacity: graphSampleCapacity(updateInterval: updateInterval))
+    }
 
     func read() -> NetDetail {
         let preferredIface = primaryInterfaceName()

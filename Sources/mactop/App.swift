@@ -320,11 +320,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 final class SystemMonitor {
-    private let cpuReader        = CPUReader()
-    private let ramReader        = RAMReader()
-    private let gpuReader        = GPUReader()
-    private let powerReader      = PowerReader()
-    private let netReader        = NetReader()
+    private let cpuReader: CPUReader
+    private let ramReader: RAMReader
+    private let gpuReader: GPUReader
+    private let powerReader = PowerReader()
+    private let netReader: NetReader
     private let cpuQueue = DispatchQueue(label: "mactop.monitor.cpu", qos: .utility)
     private let ramQueue = DispatchQueue(label: "mactop.monitor.ram", qos: .utility)
     private let gpuQueue = DispatchQueue(label: "mactop.monitor.gpu", qos: .utility)
@@ -340,6 +340,10 @@ final class SystemMonitor {
          onPower: @escaping (PowerDetail) -> Void,
          onNet: @escaping (NetDetail) -> Void) {
 
+        cpuReader = CPUReader(updateInterval: config.cpuInterval)
+        ramReader = RAMReader(updateInterval: config.ramInterval)
+        gpuReader = GPUReader(updateInterval: config.gpuInterval)
+        netReader = NetReader(updateInterval: config.netInterval)
         self.onPower = onPower
 
         cpuQueue.sync { _ = cpuReader.read() }

@@ -7,6 +7,8 @@ private let sepHeight: CGFloat     = 30
 private let rowHeight: CGFloat     = 22
 private let margins: CGFloat       = 8
 private let spacing: CGFloat       = 2
+private let fiveMinuteOneSecondSamples = 300
+private let fiveMinuteThreeSecondSamples = 100
 
 // MARK: - Shared field classes (matching Stats' LabelField / ValueField exactly)
 
@@ -355,7 +357,7 @@ final class CPUPopupView: NSStackView {
         lineBox.wantsLayer = true
         lineBox.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
         lineBox.layer?.cornerRadius = 3
-        lineChart = LineChartView(frame: NSRect(x: 1, y: 0, width: popupWidth - 2, height: chartContentH), num: 180, fixedMax: 1)
+        lineChart = LineChartView(frame: NSRect(x: 1, y: 0, width: popupWidth - 2, height: chartContentH), num: fiveMinuteOneSecondSamples, fixedMax: 1)
         lineBox.addSubview(lineChart)
         view.addArrangedSubview(lineBox)
 
@@ -414,7 +416,7 @@ final class CPUPopupView: NSStackView {
         return view
     }
 
-    func update(_ d: CPUDetail, processes: [TopProcess], syncHistory: Bool = false) {
+    func update(_ d: CPUDetail, processes: [TopProcess], syncHistory _: Bool = false) {
         systemField.stringValue = "\(Int((d.system * 100).rounded()))%"
         userField.stringValue   = "\(Int((d.user   * 100).rounded()))%"
         idleField.stringValue   = "\(Int((d.idle   * 100).rounded()))%"
@@ -427,11 +429,7 @@ final class CPUPopupView: NSStackView {
         circle.setNonActiveSegmentColor(idleColor)
         circle.setValue(d.total)
 
-        if syncHistory {
-            lineChart.setValues(d.history)
-        } else {
-            lineChart.addValue(d.total)
-        }
+        lineChart.setValues(d.history)
 
         if !d.usagePerCore.isEmpty {
             let vals = d.usagePerCore.enumerated().map { idx, value in
@@ -538,7 +536,7 @@ final class RAMPopupView: NSStackView {
         container.wantsLayer = true
         container.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
         container.layer?.cornerRadius = 3
-        lineChart = LineChartView(frame: NSRect(x: 1, y: 0, width: popupWidth - 2, height: chartH), num: 180, fixedMax: 1)
+        lineChart = LineChartView(frame: NSRect(x: 1, y: 0, width: popupWidth - 2, height: chartH), num: fiveMinuteOneSecondSamples, fixedMax: 1)
         container.addSubview(lineChart)
         view.addSubview(container)
         return view
@@ -585,7 +583,7 @@ final class RAMPopupView: NSStackView {
         return view
     }
 
-    func update(_ d: RAMDetail, processes: [TopProcess], syncHistory: Bool = false) {
+    func update(_ d: RAMDetail, processes: [TopProcess], syncHistory _: Bool = false) {
         let used = d.appBytes + d.wiredBytes + d.compressedBytes
         usedField.stringValue  = fmtMemory(used)
         appField.stringValue   = fmtMemory(d.appBytes)
@@ -604,11 +602,7 @@ final class RAMPopupView: NSStackView {
 
         level.setActiveSegment(d.pressureLevel)
 
-        if syncHistory {
-            lineChart.setValues(d.history)
-        } else {
-            lineChart.addValue(d.total)
-        }
+        lineChart.setValues(d.history)
 
         processesView.setProcesses(processes) { v in fmtMemory(UInt64(v)) }
     }
@@ -735,7 +729,7 @@ final class GPUPopupView: NSStackView {
     }
 
     private func addChart(id: String) {
-        let c = LineChartView(frame: NSRect(x: 0, y: 0, width: 100, height: chartSize), num: 120, fixedMax: 1)
+        let c = LineChartView(frame: NSRect(x: 0, y: 0, width: 100, height: chartSize), num: fiveMinuteThreeSecondSamples, fixedMax: 1)
         c.id = id
         c.wantsLayer = true
         c.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
@@ -749,32 +743,20 @@ final class GPUPopupView: NSStackView {
         }
     }
 
-    func update(_ d: GPUDetail, syncHistory: Bool = false) {
+    func update(_ d: GPUDetail, syncHistory _: Bool = false) {
         modelLabel.stringValue = d.model
 
         gpuCircle.setValue(d.total)
         gpuCircle.setText("\(Int((d.total * 100).rounded()))%")
-        if syncHistory {
-            gpuChart.setValues(d.history)
-        } else {
-            gpuChart.addValue(d.total)
-        }
+        gpuChart.setValues(d.history)
 
         renderCircle.setValue(d.render)
         renderCircle.setText("\(Int((d.render * 100).rounded()))%")
-        if syncHistory {
-            renderChart.setValues(d.renderHistory)
-        } else {
-            renderChart.addValue(d.render)
-        }
+        renderChart.setValues(d.renderHistory)
 
         tilerCircle.setValue(d.tiler)
         tilerCircle.setText("\(Int((d.tiler * 100).rounded()))%")
-        if syncHistory {
-            tilerChart.setValues(d.tilerHistory)
-        } else {
-            tilerChart.addValue(d.tiler)
-        }
+        tilerChart.setValues(d.tilerHistory)
     }
 }
 
@@ -1100,7 +1082,7 @@ final class NetPopupView: NSStackView {
         container.layer?.cornerRadius = 3
         usageChart = NetworkChartView(
             frame: NSRect(x: 0, y: 1, width: popupWidth, height: chartH - 2),
-            num: 180,
+            num: fiveMinuteOneSecondSamples,
             outColor: uploadColor, inColor: downloadColor
         )
         container.addSubview(usageChart)
@@ -1222,7 +1204,7 @@ final class NetPopupView: NSStackView {
         }
     }
 
-    func update(_ d: NetDetail, syncHistory: Bool = false) {
+    func update(_ d: NetDetail, syncHistory _: Bool = false) {
         setSpeedFields(upload: d.upload, download: d.download)
         totalUpField.stringValue   = fmtMemory(d.totalUp)
         totalDownField.stringValue = fmtMemory(d.totalDown)
@@ -1236,10 +1218,6 @@ final class NetPopupView: NSStackView {
         localIPField.stringValue  = d.localIP.isEmpty    ? "Unknown" : d.localIP
         publicIPField.stringValue = d.publicIP ?? "Fetching…"
 
-        if syncHistory {
-            usageChart.setValues(d.history)
-        } else {
-            usageChart.addValue(upload: d.upload, download: d.download)
-        }
+        usageChart.setValues(d.history)
     }
 }
