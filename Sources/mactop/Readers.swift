@@ -127,6 +127,8 @@ struct CPUDetail {
 final class CPUReader {
     private struct Tick { var user, sys, idle, nice: Double }
     private var prev: [Tick] = []
+    private var ticks: [Tick] = []
+    private var perCore: [Double] = []
     private var history: ScalarHistory
     private let coreKinds = CPUReader.readCoreKinds()
     private let uptimeFormatter: DateComponentsFormatter = {
@@ -165,8 +167,10 @@ final class CPUReader {
                           vm_size_t(Int(infoCount) * MemoryLayout<integer_t>.stride))
         }
 
-        var ticks: [Tick] = []
-        ticks.reserveCapacity(Int(cpuCount))
+        ticks.removeAll(keepingCapacity: true)
+        if ticks.capacity < Int(cpuCount) {
+            ticks.reserveCapacity(Int(cpuCount))
+        }
         for i in 0..<Int(cpuCount) {
             let b = i * Int(CPU_STATE_MAX)
             ticks.append(Tick(
@@ -180,8 +184,12 @@ final class CPUReader {
         var totalUsage = 0.0
         var systemUsage = 0.0
         var userUsage = 0.0
-        var perCore: [Double] = []
-        perCore.reserveCapacity(ticks.count)
+        if includeHistory {
+            perCore.removeAll(keepingCapacity: true)
+            if perCore.capacity < ticks.count {
+                perCore.reserveCapacity(ticks.count)
+            }
+        }
 
         if prev.count == ticks.count {
             for i in 0..<ticks.count {
@@ -195,8 +203,10 @@ final class CPUReader {
                     totalUsage  += coreUsage
                     systemUsage += ds / total
                     userUsage   += (du + dn) / total
-                    perCore.append(min(1, max(0, coreUsage)))
-                } else {
+                    if includeHistory {
+                        perCore.append(min(1, max(0, coreUsage)))
+                    }
+                } else if includeHistory {
                     perCore.append(0)
                 }
             }
@@ -206,7 +216,7 @@ final class CPUReader {
             userUsage   /= n
         }
 
-        prev = ticks
+        swap(&prev, &ticks)
 
         let total = min(1, max(0, totalUsage))
         history.append(total)
@@ -218,7 +228,7 @@ final class CPUReader {
             system: min(1, max(0, systemUsage)),
             user: min(1, max(0, userUsage)),
             idle: min(1, max(0, 1 - totalUsage)),
-            usagePerCore: perCore,
+            usagePerCore: includeHistory ? perCore : [],
             coreKinds: coreKinds,
             loadAvg1: loadAvg[0],
             loadAvg5: loadAvg[1],
@@ -663,7 +673,7 @@ final class PowerReader {
 
     private struct PowerHistory {
         private var dates: [Date]
-        private var samples: [PowerHistorySample?]
+        private var samples: [PowerHistorySample]
         private var nextIndex = 0
         private var count = 0
         private var smoothed: PowerHistorySample?
@@ -671,7 +681,7 @@ final class PowerReader {
         init(capacity: Int) {
             let capacity = max(capacity, 1)
             dates = Array(repeating: .distantPast, count: capacity)
-            samples = Array(repeating: nil, count: capacity)
+            samples = Array(repeating: PowerHistorySample(total: 0, modeled: 0, cpu: 0, gpu: 0, ane: 0, memory: 0, media: 0, display: 0, other: 0), count: capacity)
         }
 
         mutating func append(_ sample: PowerSample, at date: Date) {
@@ -692,8 +702,8 @@ final class PowerReader {
             let start = count == samples.count ? nextIndex : 0
             for offset in 0..<count {
                 let index = (start + offset) % samples.count
-                if dates[index] >= cutoff, let sample = samples[index] {
-                    output.append(sample)
+                if dates[index] >= cutoff {
+                    output.append(samples[index])
                 }
             }
             return output
@@ -1181,6 +1191,9 @@ final class NetReader {
 
     // Interface detail cache — refreshed at most every 15 s
     private var detailsLastRead = Date.distantPast
+    private var cachedInterfaceName = ""
+    private var cachedLocalIP = ""
+    private var cachedIsUp = false
     private var cachedDisplayName = ""
     private var cachedMAC = ""
     private var cachedSSID: String? = nil
@@ -1196,23 +1209,20 @@ final class NetReader {
     }
 
     func read(includeHistory: Bool = false) -> NetDetail {
+        let now = Date()
         let preferredIface = primaryInterfaceName()
+        let shouldRefreshDetails = now.timeIntervalSince(detailsLastRead) >= 15
         var ifap: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifap) == 0, let head = ifap else {
             return NetDetail(upload: 0, download: 0, totalUp: cumulativeUp, totalDown: cumulativeDown,
-                             interfaceName: "", displayName: "", macAddress: "", ssid: nil,
-                             localIP: "", publicIP: lockedPublicIP(), transmitRate: 0, isUp: false,
+                             interfaceName: cachedInterfaceName, displayName: cachedDisplayName, macAddress: cachedMAC, ssid: cachedSSID,
+                             localIP: cachedLocalIP, publicIP: lockedPublicIP(), transmitRate: cachedTransmitRate, isUp: cachedIsUp,
                              history: includeHistory ? history.orderedValues : [], historyCapacity: history.capacity)
         }
         defer { freeifaddrs(head) }
 
         var totalUp: UInt64 = 0
         var totalDown: UInt64 = 0
-        var primaryIface = ""
-        var localIP = ""
-        var isUp = false
-        var macFromLink = ""
-        var transmitFromLink: Double = 0
         var linkDetails: [String: (isUp: Bool, mac: String, transmitRate: Double)] = [:]
         var ipByInterface: [String: String] = [:]
         var firstLinkInterface = ""
@@ -1230,25 +1240,29 @@ final class NetReader {
                 let ifData = raw.assumingMemoryBound(to: if_data.self).pointee
                 totalUp   += UInt64(ifData.ifi_obytes)
                 totalDown += UInt64(ifData.ifi_ibytes)
-                var mac = ""
-                addr.withMemoryRebound(to: sockaddr_dl.self, capacity: 1) { sdl in
-                    let alen = Int(sdl.pointee.sdl_alen)
-                    let nlen = Int(sdl.pointee.sdl_nlen)
-                    if alen == 6 {
-                        mac = withUnsafeBytes(of: sdl.pointee.sdl_data) { raw in
-                            Self.macString(bytes: raw, offset: nlen)
+
+                if shouldRefreshDetails {
+                    var mac = ""
+                    addr.withMemoryRebound(to: sockaddr_dl.self, capacity: 1) { sdl in
+                        let alen = Int(sdl.pointee.sdl_alen)
+                        let nlen = Int(sdl.pointee.sdl_nlen)
+                        if alen == 6 {
+                            mac = withUnsafeBytes(of: sdl.pointee.sdl_data) { raw in
+                                Self.macString(bytes: raw, offset: nlen)
+                            }
                         }
                     }
+                    linkDetails[name] = (
+                        isUp: (iface.pointee.ifa_flags & UInt32(IFF_UP)) != 0,
+                        mac: mac,
+                        transmitRate: Double(ifData.ifi_baudrate) / 1_000_000
+                    )
+                    if firstLinkInterface.isEmpty { firstLinkInterface = name }
                 }
-                linkDetails[name] = (
-                    isUp: (iface.pointee.ifa_flags & UInt32(IFF_UP)) != 0,
-                    mac: mac,
-                    transmitRate: Double(ifData.ifi_baudrate) / 1_000_000
-                )
-                if firstLinkInterface.isEmpty { firstLinkInterface = name }
             }
 
-            if let addr = iface.pointee.ifa_addr,
+            if shouldRefreshDetails,
+               let addr = iface.pointee.ifa_addr,
                addr.pointee.sa_family == UInt8(AF_INET),
                ipByInterface[name] == nil {
                 var rawAddr = addr.pointee
@@ -1264,22 +1278,16 @@ final class NetReader {
             }
         }
 
-        if let preferredIface, linkDetails[preferredIface] != nil {
-            primaryIface = preferredIface
-        } else if !firstIPInterface.isEmpty {
-            primaryIface = firstIPInterface
-        } else {
-            primaryIface = firstLinkInterface
+        if shouldRefreshDetails {
+            refreshCachedInterfaceDetails(
+                preferredIface: preferredIface,
+                linkDetails: linkDetails,
+                ipByInterface: ipByInterface,
+                firstLinkInterface: firstLinkInterface,
+                firstIPInterface: firstIPInterface
+            )
         }
 
-        if let link = linkDetails[primaryIface] {
-            isUp = link.isUp
-            macFromLink = link.mac
-            transmitFromLink = link.transmitRate
-        }
-        localIP = ipByInterface[primaryIface] ?? ""
-
-        let now = Date()
         let elapsed = now.timeIntervalSince(lastTime)
         var upRate = 0.0
         var downRate = 0.0
@@ -1299,10 +1307,6 @@ final class NetReader {
 
         history.append(up: upRate, down: downRate)
 
-        // Refresh slow/cached details
-        if !macFromLink.isEmpty { cachedMAC = macFromLink }
-        if transmitFromLink > 0 { cachedTransmitRate = transmitFromLink }
-        refreshDetails(ifName: primaryIface)
         refreshPublicIP()
 
         return NetDetail(
@@ -1310,17 +1314,43 @@ final class NetReader {
             download: downRate,
             totalUp: cumulativeUp,
             totalDown: cumulativeDown,
-            interfaceName: primaryIface,
+            interfaceName: cachedInterfaceName,
             displayName: cachedDisplayName,
             macAddress: cachedMAC,
             ssid: cachedSSID,
-            localIP: localIP,
+            localIP: cachedLocalIP,
             publicIP: lockedPublicIP(),
             transmitRate: cachedTransmitRate,
-            isUp: isUp,
+            isUp: cachedIsUp,
             history: includeHistory ? history.orderedValues : [],
             historyCapacity: history.capacity
         )
+    }
+
+    private func refreshCachedInterfaceDetails(
+        preferredIface: String?,
+        linkDetails: [String: (isUp: Bool, mac: String, transmitRate: Double)],
+        ipByInterface: [String: String],
+        firstLinkInterface: String,
+        firstIPInterface: String
+    ) {
+        let interfaceName: String
+        if let preferredIface, linkDetails[preferredIface] != nil {
+            interfaceName = preferredIface
+        } else if !firstIPInterface.isEmpty {
+            interfaceName = firstIPInterface
+        } else {
+            interfaceName = firstLinkInterface
+        }
+
+        cachedInterfaceName = interfaceName
+        cachedLocalIP = ipByInterface[interfaceName] ?? ""
+        if let link = linkDetails[interfaceName] {
+            cachedIsUp = link.isUp
+            if !link.mac.isEmpty { cachedMAC = link.mac }
+            if link.transmitRate > 0 { cachedTransmitRate = link.transmitRate }
+        }
+        refreshDetails(ifName: interfaceName)
     }
 
     private func primaryInterfaceName() -> String? {

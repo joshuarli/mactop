@@ -268,7 +268,9 @@ final class LineChartView: NSView {
     }
 
     func setValues(_ values: [Double]) {
-        points = Array(repeating: nil, count: points.count)
+        for index in points.indices {
+            points[index] = nil
+        }
         nextPointIndex = 0
         pointsAreFull = false
         for value in values.suffix(points.count) {
@@ -396,6 +398,8 @@ final class ColumnChartView: NSView {
 final class NetworkChartView: NSView {
     private var inChart: LineChartView
     private var outChart: LineChartView
+    private var inValues: [Double] = []
+    private var outValues: [Double] = []
 
     init(frame: NSRect, num: Int, outColor: NSColor = .systemRed, inColor: NSColor = .systemBlue) {
         let h = max(frame.height, 2)
@@ -418,8 +422,16 @@ final class NetworkChartView: NSView {
     }
 
     func setValues(_ values: [(up: Double, down: Double)]) {
-        outChart.setValues(values.map(\.up))
-        inChart.setValues(values.map(\.down))
+        outValues.removeAll(keepingCapacity: true)
+        inValues.removeAll(keepingCapacity: true)
+        outValues.reserveCapacity(values.count)
+        inValues.reserveCapacity(values.count)
+        for value in values {
+            outValues.append(value.up)
+            inValues.append(value.down)
+        }
+        outChart.setValues(outValues)
+        inChart.setValues(inValues)
     }
 
     func reinit(_ num: Int) {
