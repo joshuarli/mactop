@@ -16,69 +16,88 @@ private func smoothedValue(_ value: Double, previous: Double?, alpha: Double = g
 }
 
 private struct ScalarHistory {
-    private var entries: [(date: Date, value: Float)] = []
-    private let maxCount: Int
+    private var dates: [Date]
+    private var values: [Float]
+    private var nextIndex = 0
+    private var count = 0
     private var smoothed: Double?
 
     init(capacity: Int) {
-        maxCount = max(capacity, 1)
-        entries.reserveCapacity(maxCount)
+        let capacity = max(capacity, 1)
+        dates = Array(repeating: .distantPast, count: capacity)
+        values = Array(repeating: 0, count: capacity)
     }
 
-    var capacity: Int { maxCount }
+    var capacity: Int { values.count }
 
     mutating func append(_ value: Double) {
         let value = smoothedValue(value, previous: smoothed)
         smoothed = value
-        entries.append((Date(), Float(value)))
-        prune()
-    }
-
-    private mutating func prune() {
-        let cutoff = Date().addingTimeInterval(-graphHistoryWindow)
-        entries.removeAll { $0.date < cutoff }
-        if entries.count > maxCount {
-            entries.removeFirst(entries.count - maxCount)
-        }
+        dates[nextIndex] = Date()
+        values[nextIndex] = Float(value)
+        nextIndex = (nextIndex + 1) % values.count
+        count = min(count + 1, values.count)
     }
 
     var orderedValues: [Double] {
-        entries.map { Double($0.value) }
+        guard count > 0 else { return [] }
+        let cutoff = Date().addingTimeInterval(-graphHistoryWindow)
+        var output: [Double] = []
+        output.reserveCapacity(count)
+        let start = count == values.count ? nextIndex : 0
+        for offset in 0..<count {
+            let index = (start + offset) % values.count
+            if dates[index] >= cutoff {
+                output.append(Double(values[index]))
+            }
+        }
+        return output
     }
 }
 
 private struct PairHistory {
-    private var entries: [(date: Date, up: Float, down: Float)] = []
-    private let maxCount: Int
+    private var dates: [Date]
+    private var upValues: [Float]
+    private var downValues: [Float]
+    private var nextIndex = 0
+    private var count = 0
     private var smoothedUp: Double?
     private var smoothedDown: Double?
 
     init(capacity: Int) {
-        maxCount = max(capacity, 1)
-        entries.reserveCapacity(maxCount)
+        let capacity = max(capacity, 1)
+        dates = Array(repeating: .distantPast, count: capacity)
+        upValues = Array(repeating: 0, count: capacity)
+        downValues = Array(repeating: 0, count: capacity)
     }
 
-    var capacity: Int { maxCount }
+    var capacity: Int { upValues.count }
 
     mutating func append(up: Double, down: Double) {
         let up = smoothedValue(up, previous: smoothedUp)
         let down = smoothedValue(down, previous: smoothedDown)
         smoothedUp = up
         smoothedDown = down
-        entries.append((Date(), Float(up), Float(down)))
-        prune()
-    }
-
-    private mutating func prune() {
-        let cutoff = Date().addingTimeInterval(-graphHistoryWindow)
-        entries.removeAll { $0.date < cutoff }
-        if entries.count > maxCount {
-            entries.removeFirst(entries.count - maxCount)
-        }
+        dates[nextIndex] = Date()
+        upValues[nextIndex] = Float(up)
+        downValues[nextIndex] = Float(down)
+        nextIndex = (nextIndex + 1) % upValues.count
+        count = min(count + 1, upValues.count)
     }
 
     var orderedValues: [(up: Double, down: Double)] {
-        entries.map { (up: Double($0.up), down: Double($0.down)) }
+        guard count > 0 else { return [] }
+        let cutoff = Date().addingTimeInterval(-graphHistoryWindow)
+        var output: [(up: Double, down: Double)] = []
+        output.reserveCapacity(count)
+        let start = count == upValues.count ? nextIndex : 0
+        for offset in 0..<count {
+            let index = (start + offset) % upValues.count
+            if dates[index] >= cutoff {
+                output.append((up: Double(upValues[index]), down: Double(downValues[index])))
+            }
+        }
+        return output
     }
 }
 
@@ -643,32 +662,42 @@ final class PowerReader {
     }
 
     private struct PowerHistory {
-        private var entries: [(date: Date, sample: PowerHistorySample)] = []
-        private let maxCount: Int
+        private var dates: [Date]
+        private var samples: [PowerHistorySample?]
+        private var nextIndex = 0
+        private var count = 0
         private var smoothed: PowerHistorySample?
 
         init(capacity: Int) {
-            maxCount = max(capacity, 1)
-            entries.reserveCapacity(maxCount)
+            let capacity = max(capacity, 1)
+            dates = Array(repeating: .distantPast, count: capacity)
+            samples = Array(repeating: nil, count: capacity)
         }
 
         mutating func append(_ sample: PowerSample, at date: Date) {
             guard let rawHistorySample = sample.historySample else { return }
             let historySample = rawHistorySample.smoothed(after: smoothed)
             smoothed = historySample
-            entries.append((date, historySample))
-            prune(at: date)
+            dates[nextIndex] = date
+            samples[nextIndex] = historySample
+            nextIndex = (nextIndex + 1) % samples.count
+            count = min(count + 1, samples.count)
         }
 
-        private mutating func prune(at date: Date) {
-            let cutoff = date.addingTimeInterval(-graphHistoryWindow)
-            entries.removeAll { $0.date < cutoff }
-            if entries.count > maxCount {
-                entries.removeFirst(entries.count - maxCount)
+        var values: [PowerHistorySample] {
+            guard count > 0 else { return [] }
+            let cutoff = Date().addingTimeInterval(-graphHistoryWindow)
+            var output: [PowerHistorySample] = []
+            output.reserveCapacity(count)
+            let start = count == samples.count ? nextIndex : 0
+            for offset in 0..<count {
+                let index = (start + offset) % samples.count
+                if dates[index] >= cutoff, let sample = samples[index] {
+                    output.append(sample)
+                }
             }
+            return output
         }
-
-        var values: [PowerHistorySample] { entries.map(\.sample) }
     }
 
     private final class ModeledPowerReader {
