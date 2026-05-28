@@ -127,7 +127,7 @@ final class CPUReader {
         history = ScalarHistory(capacity: graphSampleCapacity(updateInterval: updateInterval))
     }
 
-    func read() -> CPUDetail {
+    func read(includeHistory: Bool = false) -> CPUDetail {
         var info: processor_info_array_t?
         var infoCount: mach_msg_type_number_t = 0
         var cpuCount: natural_t = 0
@@ -138,7 +138,7 @@ final class CPUReader {
             return CPUDetail(total: 0, system: 0, user: 0, idle: 1, usagePerCore: [],
                              coreKinds: coreKinds,
                              loadAvg1: 0, loadAvg5: 0, loadAvg15: 0, uptime: uptimeString(),
-                             history: history.orderedValues, historyCapacity: history.capacity)
+                             history: includeHistory ? history.orderedValues : [], historyCapacity: history.capacity)
         }
         defer {
             vm_deallocate(mach_task_self_,
@@ -205,7 +205,7 @@ final class CPUReader {
             loadAvg5: loadAvg[1],
             loadAvg15: loadAvg[2],
             uptime: uptimeString(),
-            history: history.orderedValues,
+            history: includeHistory ? history.orderedValues : [],
             historyCapacity: history.capacity
         )
     }
@@ -362,7 +362,7 @@ final class RAMReader {
         history = ScalarHistory(capacity: graphSampleCapacity(updateInterval: updateInterval))
     }
 
-    func read() -> RAMDetail {
+    func read(includeHistory: Bool = false) -> RAMDetail {
         var stats = vm_statistics64()
         var count = mach_msg_type_number_t(
             MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size
@@ -374,7 +374,7 @@ final class RAMReader {
         }) == KERN_SUCCESS else {
             return RAMDetail(total: 0, appBytes: 0, wiredBytes: 0, compressedBytes: 0,
                              freeBytes: 0, swapBytes: 0, totalBytes: totalBytes, pressureLevel: 0,
-                             history: history.orderedValues, historyCapacity: history.capacity)
+                             history: includeHistory ? history.orderedValues : [], historyCapacity: history.capacity)
         }
 
         let page = UInt64(vm_page_size)
@@ -407,7 +407,7 @@ final class RAMReader {
             swapBytes: cachedSwapBytes,
             totalBytes: totalBytes,
             pressureLevel: cachedPressureLevel,
-            history: history.orderedValues,
+            history: includeHistory ? history.orderedValues : [],
             historyCapacity: history.capacity
         )
     }
@@ -479,9 +479,9 @@ final class GPUReader {
         return brand.isEmpty ? "GPU" : brand + " GPU"
     }()
 
-    func read() -> GPUDetail {
+    func read(includeHistory: Bool = false) -> GPUDetail {
         if readCachedService() {
-            return detail()
+            return detail(includeHistory: includeHistory)
         }
 
         if acceleratorService != 0 {
@@ -502,11 +502,11 @@ final class GPUReader {
             guard service != 0 else { break }
             if read(service: service) {
                 acceleratorService = service
-                return detail()
+                return detail(includeHistory: includeHistory)
             }
             IOObjectRelease(service)
         }
-        return detail()
+        return detail(includeHistory: includeHistory)
     }
 
     private func readCachedService() -> Bool {
@@ -533,15 +533,15 @@ final class GPUReader {
         return true
     }
 
-    private func detail() -> GPUDetail {
+    private func detail(includeHistory: Bool = false) -> GPUDetail {
         GPUDetail(
             total: total,
             render: render,
             tiler: tiler,
             model: Self.modelName,
-            history: history.orderedValues,
-            renderHistory: renderHistory.orderedValues,
-            tilerHistory: tilerHistory.orderedValues,
+            history: includeHistory ? history.orderedValues : [],
+            renderHistory: includeHistory ? renderHistory.orderedValues : [],
+            tilerHistory: includeHistory ? tilerHistory.orderedValues : [],
             historyCapacity: history.capacity
         )
     }
@@ -1048,7 +1048,7 @@ final class PowerReader {
         systemOverhead = nil
     }
 
-    func read() -> PowerDetail {
+    func read(includeHistory: Bool = false) -> PowerDetail {
         if !modeledPowerReaderAttempted {
             modeledPowerReader = ModeledPowerReader()
             modeledPowerReaderAttempted = true
@@ -1106,7 +1106,7 @@ final class PowerReader {
             media: hasModeled ? current?.media : nil,
             display: hasModeled ? current?.display : nil,
             other: hasModeled ? current?.other : nil,
-            history: history.values
+            history: includeHistory ? history.values : []
         )
     }
 
@@ -1166,14 +1166,14 @@ final class NetReader {
         history = PairHistory(capacity: graphSampleCapacity(updateInterval: updateInterval))
     }
 
-    func read() -> NetDetail {
+    func read(includeHistory: Bool = false) -> NetDetail {
         let preferredIface = primaryInterfaceName()
         var ifap: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifap) == 0, let head = ifap else {
             return NetDetail(upload: 0, download: 0, totalUp: cumulativeUp, totalDown: cumulativeDown,
                              interfaceName: "", displayName: "", macAddress: "", ssid: nil,
                              localIP: "", publicIP: lockedPublicIP(), transmitRate: 0, isUp: false,
-                             history: history.orderedValues, historyCapacity: history.capacity)
+                             history: includeHistory ? history.orderedValues : [], historyCapacity: history.capacity)
         }
         defer { freeifaddrs(head) }
 
@@ -1289,7 +1289,7 @@ final class NetReader {
             publicIP: lockedPublicIP(),
             transmitRate: cachedTransmitRate,
             isUp: isUp,
-            history: history.orderedValues,
+            history: includeHistory ? history.orderedValues : [],
             historyCapacity: history.capacity
         )
     }

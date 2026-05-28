@@ -253,11 +253,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Close others, toggle target
         for (i, panel) in panels.enumerated() {
-            if i != idx { panel.orderOut(nil) }
+            if i != idx {
+                panel.orderOut(nil)
+                monitor.setHistoryEnabled(false, for: i)
+            }
         }
 
         if targetPanel.isVisible {
             targetPanel.orderOut(nil)
+            monitor.setHistoryEnabled(false, for: idx)
             return
         }
 
@@ -281,6 +285,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         targetPanel.setFrameOrigin(NSPoint(x: x, y: y))
+        monitor.setHistoryEnabled(true, for: idx)
         refreshPopup(at: idx, syncHistory: true)
         refreshProcesses(for: idx)
         targetPanel.makeKeyAndOrderFront(nil)
@@ -288,6 +293,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func closeAllPanels() {
         allPanels.forEach { $0.orderOut(nil) }
+        monitor.setAllHistoryDisabled()
     }
 
     private func refreshPopup(at index: Int, syncHistory: Bool) {
@@ -338,6 +344,7 @@ final class SystemMonitor {
     private var gpuReadInFlight = false
     private var powerReadInFlight = false
     private var netReadInFlight = false
+    private var historyEnabled = Array(repeating: false, count: 5)
 
     init(config: Config,
          onCPU: @escaping (CPUDetail) -> Void,
@@ -369,11 +376,17 @@ final class SystemMonitor {
                             onRAM: @escaping (RAMDetail) -> Void,
                             onGPU: @escaping (GPUDetail) -> Void,
                             onNet: @escaping (NetDetail) -> Void) {
+        let includeNetHistory = historyEnabled[0]
+        let includeCPUHistory = historyEnabled[1]
+        let includeRAMHistory = historyEnabled[2]
+        let includeGPUHistory = historyEnabled[3]
+        let includePowerHistory = historyEnabled[4]
+
         if !cpuReadInFlight {
             cpuReadInFlight = true
             cpuQueue.async { [weak self] in
                 guard let self else { return }
-                let cpu = self.cpuReader.read()
+                let cpu = self.cpuReader.read(includeHistory: includeCPUHistory)
                 DispatchQueue.main.async { onCPU(cpu) }
                 self.coordinatorQueue.async { self.cpuReadInFlight = false }
             }
@@ -383,7 +396,7 @@ final class SystemMonitor {
             ramReadInFlight = true
             ramQueue.async { [weak self] in
                 guard let self else { return }
-                let ram = self.ramReader.read()
+                let ram = self.ramReader.read(includeHistory: includeRAMHistory)
                 DispatchQueue.main.async { onRAM(ram) }
                 self.coordinatorQueue.async { self.ramReadInFlight = false }
             }
@@ -393,7 +406,7 @@ final class SystemMonitor {
             gpuReadInFlight = true
             gpuQueue.async { [weak self] in
                 guard let self else { return }
-                let gpu = self.gpuReader.read()
+                let gpu = self.gpuReader.read(includeHistory: includeGPUHistory)
                 DispatchQueue.main.async { onGPU(gpu) }
                 self.coordinatorQueue.async { self.gpuReadInFlight = false }
             }
@@ -403,7 +416,7 @@ final class SystemMonitor {
             powerReadInFlight = true
             powerQueue.async { [weak self] in
                 guard let self else { return }
-                let power = self.powerReader.read()
+                let power = self.powerReader.read(includeHistory: includePowerHistory)
                 DispatchQueue.main.async { self.onPower(power) }
                 self.coordinatorQueue.async { self.powerReadInFlight = false }
             }
@@ -413,10 +426,23 @@ final class SystemMonitor {
             netReadInFlight = true
             netQueue.async { [weak self] in
                 guard let self else { return }
-                let net = self.netReader.read()
+                let net = self.netReader.read(includeHistory: includeNetHistory)
                 DispatchQueue.main.async { onNet(net) }
                 self.coordinatorQueue.async { self.netReadInFlight = false }
             }
+        }
+    }
+
+    func setHistoryEnabled(_ enabled: Bool, for index: Int) {
+        guard historyEnabled.indices.contains(index) else { return }
+        coordinatorQueue.async { [weak self] in
+            self?.historyEnabled[index] = enabled
+        }
+    }
+
+    func setAllHistoryDisabled() {
+        coordinatorQueue.async { [weak self] in
+            self?.historyEnabled = Array(repeating: false, count: 5)
         }
     }
 
