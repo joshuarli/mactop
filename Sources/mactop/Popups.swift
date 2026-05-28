@@ -904,34 +904,29 @@ final class PowerPopupView: NSStackView {
         otherValue.stringValue = fmtPower(d.other)
         updateCharging(d.charging)
 
-        guard let cpu = d.cpu,
-              let gpu = d.gpu,
-              let ane = d.ane,
-              let memory = d.memory,
-              let media = d.media,
-              let display = d.display,
-              let other = d.other else {
+        guard d.cpu != nil,
+              d.gpu != nil,
+              d.ane != nil,
+              d.memory != nil,
+              d.media != nil,
+              d.display != nil,
+              d.other != nil else {
             if syncHistory {
                 chart.setValues(system: [], cpu: [], gpu: [], ane: [], memory: [], media: [], display: [], other: [])
             }
             return
         }
 
-        let system = d.total ?? cpu + gpu + ane + memory + media + display + other
-        if syncHistory {
-            chart.setValues(
-                system: d.totalHistory,
-                cpu: d.cpuHistory,
-                gpu: d.gpuHistory,
-                ane: d.aneHistory,
-                memory: d.memoryHistory,
-                media: d.mediaHistory,
-                display: d.displayHistory,
-                other: d.otherHistory
-            )
-        } else {
-            chart.addValue(system: system, cpu: cpu, gpu: gpu, ane: ane, memory: memory, media: media, display: display, other: other)
-        }
+        chart.setValues(
+            system: d.totalHistory,
+            cpu: d.cpuHistory,
+            gpu: d.gpuHistory,
+            ane: d.aneHistory,
+            memory: d.memoryHistory,
+            media: d.mediaHistory,
+            display: d.displayHistory,
+            other: d.otherHistory
+        )
     }
 
     private func updateCharging(_ detail: ChargingDetail?) {

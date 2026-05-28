@@ -532,25 +532,12 @@ final class StackedPowerChartView: NSView {
         drawBand(bottom: displayTop, top: otherTop, color: otherColor)
     }
 
-    func addValue(system: Double, cpu: Double, gpu: Double, ane: Double, memory: Double, media: Double, display: Double, other: Double) {
-        guard !samples.isEmpty else { return }
-        let modeled = cpu + gpu + ane + memory + media + display + other
-        samples[nextSampleIndex] = Sample(system: max(system, modeled), cpu: cpu, gpu: gpu, ane: ane, memory: memory, media: media, display: display, other: other)
-        nextSampleIndex = (nextSampleIndex + 1) % samples.count
-        if nextSampleIndex == 0 { samplesAreFull = true }
-        if window?.isVisible ?? false {
-            self.display()
-        } else {
-            needsDisplay = true
-        }
-    }
-
     func setValues(system: [Double], cpu: [Double], gpu: [Double], ane: [Double], memory: [Double], media: [Double], display: [Double], other: [Double]) {
-        samples = Array(repeating: nil, count: samples.count)
+        let count = min(system.count, cpu.count, gpu.count, ane.count, memory.count, media.count, display.count, other.count)
+        samples = Array(repeating: nil, count: max(count, 1))
         nextSampleIndex = 0
         samplesAreFull = false
 
-        let count = min(system.count, cpu.count, gpu.count, ane.count, memory.count, media.count, display.count, other.count, samples.count)
         guard count > 0 else {
             needsDisplay = true
             return

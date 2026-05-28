@@ -479,6 +479,35 @@ final class PowerReader {
         var total: Double { system ?? modeled }
     }
 
+    private struct PowerHistory {
+        private var entries: [(date: Date, sample: PowerSample)] = []
+        private let window: TimeInterval = 10 * 60
+
+        mutating func append(_ sample: PowerSample, at date: Date) {
+            entries.append((date, sample))
+            prune(at: date)
+        }
+
+        private mutating func prune(at date: Date) {
+            let cutoff = date.addingTimeInterval(-window)
+            entries.removeAll { $0.date < cutoff }
+        }
+
+        private var modeledSamples: [PowerSample] {
+            entries.map(\.sample).filter(\.hasModeled)
+        }
+
+        var totalValues: [Double] { modeledSamples.map(\.total) }
+        var modeledValues: [Double] { modeledSamples.map(\.modeled) }
+        var cpuValues: [Double] { modeledSamples.map(\.cpu) }
+        var gpuValues: [Double] { modeledSamples.map(\.gpu) }
+        var aneValues: [Double] { modeledSamples.map(\.ane) }
+        var memoryValues: [Double] { modeledSamples.map(\.memory) }
+        var mediaValues: [Double] { modeledSamples.map(\.media) }
+        var displayValues: [Double] { modeledSamples.map(\.display) }
+        var otherValues: [Double] { modeledSamples.map(\.other) }
+    }
+
     private final class IOReportPowerSampler {
         private struct IOReportAPI {
             typealias CopyChannelsInGroup = @convention(c) (UnsafeRawPointer?, UnsafeRawPointer?, UInt64, UInt64, UInt64) -> UnsafeRawPointer?
@@ -825,15 +854,7 @@ final class PowerReader {
     private var samplerAttempted = false
     private var sampler: IOReportPowerSampler?
     private let systemPowerReader = SystemPowerReader()
-    private var totalHistory = ScalarHistory(capacity: 180)
-    private var modeledHistory = ScalarHistory(capacity: 180)
-    private var cpuHistory = ScalarHistory(capacity: 180)
-    private var gpuHistory = ScalarHistory(capacity: 180)
-    private var aneHistory = ScalarHistory(capacity: 180)
-    private var memoryHistory = ScalarHistory(capacity: 180)
-    private var mediaHistory = ScalarHistory(capacity: 180)
-    private var displayHistory = ScalarHistory(capacity: 180)
-    private var otherHistory = ScalarHistory(capacity: 180)
+    private var history = PowerHistory()
     private var systemOverhead: Double?
     private var lastRawSystem: Double?
     private var cachedCharging: ChargingDetail?
@@ -890,17 +911,7 @@ final class PowerReader {
         }
 
         if let sample = current {
-            totalHistory.append(sample.total)
-            if sample.hasModeled {
-                modeledHistory.append(sample.modeled)
-                cpuHistory.append(sample.cpu)
-                gpuHistory.append(sample.gpu)
-                aneHistory.append(sample.ane)
-                memoryHistory.append(sample.memory)
-                mediaHistory.append(sample.media)
-                displayHistory.append(sample.display)
-                otherHistory.append(sample.other)
-            }
+            history.append(sample, at: Date())
         }
 
         let hasModeled = current?.hasModeled == true
@@ -916,15 +927,15 @@ final class PowerReader {
             media: hasModeled ? current?.media : nil,
             display: hasModeled ? current?.display : nil,
             other: hasModeled ? current?.other : nil,
-            totalHistory: totalHistory.orderedValues,
-            modeledHistory: modeledHistory.orderedValues,
-            cpuHistory: cpuHistory.orderedValues,
-            gpuHistory: gpuHistory.orderedValues,
-            aneHistory: aneHistory.orderedValues,
-            memoryHistory: memoryHistory.orderedValues,
-            mediaHistory: mediaHistory.orderedValues,
-            displayHistory: displayHistory.orderedValues,
-            otherHistory: otherHistory.orderedValues
+            totalHistory: history.totalValues,
+            modeledHistory: history.modeledValues,
+            cpuHistory: history.cpuValues,
+            gpuHistory: history.gpuValues,
+            aneHistory: history.aneValues,
+            memoryHistory: history.memoryValues,
+            mediaHistory: history.mediaValues,
+            displayHistory: history.displayValues,
+            otherHistory: history.otherValues
         )
     }
 
