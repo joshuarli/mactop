@@ -433,20 +433,7 @@ final class NetworkChartView: NSView {
 // MARK: - StackedPowerChartView
 
 final class StackedPowerChartView: NSView {
-    private struct Sample {
-        var system: Double
-        var cpu: Double
-        var gpu: Double
-        var ane: Double
-        var memory: Double
-        var media: Double
-        var display: Double
-        var other: Double
-    }
-
-    private var samples: [Sample?]
-    private var nextSampleIndex = 0
-    private var samplesAreFull = false
+    private var samples: [PowerHistorySample] = []
     private let cpuColor: NSColor
     private let gpuColor: NSColor
     private let aneColor: NSColor
@@ -455,9 +442,9 @@ final class StackedPowerChartView: NSView {
     private let displayColor: NSColor
     private let otherColor: NSColor
     private let systemColor: NSColor
+    private var lastSignature: (count: Int, last: PowerHistorySample)?
 
-    init(frame: NSRect, num: Int, cpuColor: NSColor, gpuColor: NSColor, aneColor: NSColor, memoryColor: NSColor, mediaColor: NSColor, displayColor: NSColor, otherColor: NSColor, systemColor: NSColor) {
-        samples = Array(repeating: nil, count: max(num, 1))
+    init(frame: NSRect, cpuColor: NSColor, gpuColor: NSColor, aneColor: NSColor, memoryColor: NSColor, mediaColor: NSColor, displayColor: NSColor, otherColor: NSColor, systemColor: NSColor) {
         self.cpuColor = cpuColor
         self.gpuColor = gpuColor
         self.aneColor = aneColor
@@ -473,12 +460,12 @@ final class StackedPowerChartView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        let values = orderedSamples().compactMap { $0 }
+        let values = samples
         guard let ctx = NSGraphicsContext.current?.cgContext, values.count > 1 else { return }
 
         ctx.setShouldAntialias(true)
 
-        let totalMax = max(values.map(\.system).max() ?? 0, 1)
+        let totalMax = max(values.map(\.total).max() ?? 0, 1)
         let width = frame.width
         let height = frame.height
         let xRatio = width / CGFloat(values.count - 1)
@@ -519,7 +506,7 @@ final class StackedPowerChartView: NSView {
         let mediaTop = values.map { $0.cpu + $0.gpu + $0.ane + $0.memory + $0.media }
         let displayTop = values.map { $0.cpu + $0.gpu + $0.ane + $0.memory + $0.media + $0.display }
         let otherTop = values.map { $0.cpu + $0.gpu + $0.ane + $0.memory + $0.media + $0.display + $0.other }
-        let systemTop = values.map(\.system)
+        let systemTop = values.map(\.total)
         let zero = Array(repeating: 0.0, count: values.count)
 
         drawBand(bottom: otherTop, top: systemTop, color: systemColor)
@@ -532,54 +519,28 @@ final class StackedPowerChartView: NSView {
         drawBand(bottom: displayTop, top: otherTop, color: otherColor)
     }
 
-    func setValues(system: [Double], cpu: [Double], gpu: [Double], ane: [Double], memory: [Double], media: [Double], display: [Double], other: [Double]) {
-        let count = min(system.count, cpu.count, gpu.count, ane.count, memory.count, media.count, display.count, other.count)
-        samples = Array(repeating: nil, count: max(count, 1))
-        nextSampleIndex = 0
-        samplesAreFull = false
-
-        guard count > 0 else {
+    func setValues(_ values: [PowerHistorySample]) {
+        guard !values.isEmpty else {
+            guard !samples.isEmpty || lastSignature != nil else { return }
+            samples = []
+            lastSignature = nil
             needsDisplay = true
             return
         }
 
-        let systemSlice = Array(system.suffix(count))
-        let cpuSlice = Array(cpu.suffix(count))
-        let gpuSlice = Array(gpu.suffix(count))
-        let aneSlice = Array(ane.suffix(count))
-        let memorySlice = Array(memory.suffix(count))
-        let mediaSlice = Array(media.suffix(count))
-        let displaySlice = Array(display.suffix(count))
-        let otherSlice = Array(other.suffix(count))
-        for i in 0..<count {
-            let modeled = cpuSlice[i] + gpuSlice[i] + aneSlice[i] + memorySlice[i] + mediaSlice[i] + displaySlice[i] + otherSlice[i]
-            samples[nextSampleIndex] = Sample(
-                system: max(systemSlice[i], modeled),
-                cpu: cpuSlice[i],
-                gpu: gpuSlice[i],
-                ane: aneSlice[i],
-                memory: memorySlice[i],
-                media: mediaSlice[i],
-                display: displaySlice[i],
-                other: otherSlice[i]
-            )
-            nextSampleIndex = (nextSampleIndex + 1) % samples.count
-            if nextSampleIndex == 0 { samplesAreFull = true }
+        let signature = values.last.map { (count: values.count, last: $0) }
+        if let signature, let lastSignature, signature.count == lastSignature.count, signature.last == lastSignature.last {
+            return
         }
+
+        samples = values
+        lastSignature = signature
 
         if window?.isVisible ?? false {
             self.display()
         } else {
             needsDisplay = true
         }
-    }
-
-    private func orderedSamples() -> [Sample?] {
-        guard !samples.isEmpty else { return [] }
-        if samplesAreFull {
-            return Array(samples[nextSampleIndex..<samples.count] + samples[0..<nextSampleIndex])
-        }
-        return Array(repeating: nil, count: samples.count - nextSampleIndex) + samples[0..<nextSampleIndex]
     }
 }
 

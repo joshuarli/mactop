@@ -4,6 +4,8 @@
 
 `mactop` is a Swift Package Manager macOS menu-bar utility. It is an accessory `NSApplication`, not a bundled `.app`. The entry point is `Sources/mactop/App.swift`.
 
+The supported deployment target is macOS 15.7 or newer.
+
 Core files:
 
 - `App.swift`: app lifecycle, `NSStatusItem` registration, popup routing, timers, and `SystemMonitor`.
@@ -120,7 +122,7 @@ GPU uses IOKit `IOAccelerator` performance statistics.
 Power uses two sources:
 
 **System power** (preferred menu-bar total on MacBooks):
-- `PowerReader.SystemPowerReader` reads `AppleSmartBattery` from IOKit.
+- `PowerReader.BatteryPowerReader` reads `AppleSmartBattery` from IOKit.
 - `PowerTelemetryData.SystemPowerIn` is preferred, falling back to `SystemCurrentIn * SystemVoltageIn`, `SystemLoad`, `BatteryPower`, then raw battery `Voltage * InstantAmperage`/`Amperage`.
 - This is intended to represent whole-machine input/draw and includes power outside the SoC: display panel/backlight, radios, storage, USB/Thunderbolt, PMIC/conversion losses, charging/battery behavior, fans where present, and other board rails.
 - `AppleSmartBattery` telemetry can update slowly or stay cached for seconds/minutes on AC/full battery. Keep a System-minus-modeled baseline from that source, then let the live modeled subtotal move within it so menu-bar System power responds to fast IOReport changes.
@@ -128,7 +130,7 @@ Power uses two sources:
 - Charging data also comes from `AppleSmartBattery`: `AdapterDetails.Watts` is the negotiated adapter maximum, `SystemPowerIn` is current system input, and `BatteryPower` is battery charge/discharge when available. The popup's Charging section should keep those concepts separate; do not label adapter max as live draw.
 
 **Modeled component power**:
-- `PowerReader.IOReportPowerSampler` dynamically loads private `IOReport` with `dlopen`, trying `/usr/lib/libIOReport.dylib`, `libIOReport.dylib`, the old private framework path, then `IOReport`. Do not link IOReport in `Package.swift`.
+- `PowerReader.ModeledPowerReader` dynamically loads private `IOReport` with `dlopen`, trying `/usr/lib/libIOReport.dylib`, `libIOReport.dylib`, the old private framework path, then `IOReport`. Do not link IOReport in `Package.swift`.
 - It subscribes to `Energy Model` plus DCP/DCPEXT display-report groups, samples twice, deltas counters with real elapsed time, and converts `mJ`/`uJ`/`nJ` to watts. Avoid `IOReportCopyAllChannels`; DCP `display stats` subgroup-only subscriptions can return zero deltas for `power`, so use the DCP group and filter to `display stats` while parsing.
 - Channel mapping: `GPU Energy` → GPU; names ending in `CPU Energy` → CPU; names starting with `ANE` → ANE; names starting with `DRAM`, `AMCC`, or `GPU SRAM` → Memory; DCP/DCPEXT `display stats` `power` deltas are preferred for Display, with Energy Model `DCS*` used only as a fallback; names starting with `AVE`, `ISP`, or `MSR` → Media; names containing `PCIe` or starting with `apciec` → Other SoC.
 - Avoid summing detailed CPU/GPU subrails such as `PACC*_CPU*`, `PCPUDTL*`, and similar detail channels into totals; they overlap with aggregate CPU/GPU energy channels and would double-count.

@@ -875,7 +875,6 @@ final class PowerPopupView: NSStackView {
 
         chart = StackedPowerChartView(
             frame: NSRect(x: margins, y: margins, width: popupWidth - margins*2, height: chartH - margins*2),
-            num: 180,
             cpuColor: cpuColor,
             gpuColor: gpuColor,
             aneColor: aneColor,
@@ -892,7 +891,7 @@ final class PowerPopupView: NSStackView {
         return view
     }
 
-    func update(_ d: PowerDetail, syncHistory: Bool = false) {
+    func update(_ d: PowerDetail, syncHistory _: Bool = false) {
         systemValue.stringValue = fmtPower(d.system)
         modeledValue.stringValue = fmtPower(d.modeled)
         cpuValue.stringValue = fmtPower(d.cpu)
@@ -911,30 +910,19 @@ final class PowerPopupView: NSStackView {
               d.media != nil,
               d.display != nil,
               d.other != nil else {
-            if syncHistory {
-                chart.setValues(system: [], cpu: [], gpu: [], ane: [], memory: [], media: [], display: [], other: [])
-            }
+            chart.setValues([])
             return
         }
 
-        chart.setValues(
-            system: d.totalHistory,
-            cpu: d.cpuHistory,
-            gpu: d.gpuHistory,
-            ane: d.aneHistory,
-            memory: d.memoryHistory,
-            media: d.mediaHistory,
-            display: d.displayHistory,
-            other: d.otherHistory
-        )
+        chart.setValues(d.history)
     }
 
     private func updateCharging(_ detail: ChargingDetail?) {
         flowView.update(detail)
         guard let detail else {
-            adapterValue.stringValue = "--"
+            adapterValue.stringValue = "Unavailable"
             systemLoadValue.stringValue = "--W"
-            batteryValue.stringValue = "--"
+            batteryValue.stringValue = "Unavailable"
             chargeLabel.stringValue = "Charge"
             chargeValue.stringValue = "--W"
             return
