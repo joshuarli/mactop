@@ -57,6 +57,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var cpuProcessReadInFlight = false
     private var ramProcessReadInFlight = false
     private var netProcessReadInFlight = false
+    private var isPaused = false
+    private var dataEpoch = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let barH  = NSStatusBar.system.thickness
@@ -106,6 +108,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             config: config,
             onCPU: { [weak self] cpu in
                 guard let self else { return }
+                guard !self.isPaused else { return }
                 self.latestCPU = cpu
                 self.cpuView.value = cpu.total
                 if self.cpuPanel.isVisible {
@@ -114,6 +117,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onRAM: { [weak self] ram in
                 guard let self else { return }
+                guard !self.isPaused else { return }
                 self.latestRAM = ram
                 self.ramView.value = ram.total
                 if self.ramPanel.isVisible {
@@ -122,6 +126,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onGPU: { [weak self] gpu in
                 guard let self else { return }
+                guard !self.isPaused else { return }
                 self.latestGPU = gpu
                 self.gpuView.value = gpu.total
                 if self.gpuPanel.isVisible {
@@ -130,6 +135,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onPower: { [weak self] power in
                 guard let self else { return }
+                guard !self.isPaused else { return }
                 self.latestPower = power
                 self.powerView.watts = power.total
                 if self.powerPanel.isVisible {
@@ -138,6 +144,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onNet: { [weak self] net in
                 guard let self else { return }
+                guard !self.isPaused else { return }
                 self.latestNet = net
                 self.netView.upload   = Int64(net.upload)
                 self.netView.download = Int64(net.download)
@@ -147,6 +154,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         )
         installPowerSourceObserver()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(togglePause),
+            name: .mactopTogglePause,
+            object: nil
+        )
 
         NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             self?.closeAllPanels()
@@ -159,6 +172,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         detailTimer.schedule(deadline: .now() + .seconds(3), repeating: .seconds(3), leeway: .milliseconds(250))
         detailTimer.setEventHandler { [weak self] in
             guard let self else { return }
+            guard !self.isPaused else { return }
             if self.cpuPanel.isVisible {
                 self.refreshProcesses(for: 1)
             }
@@ -174,10 +188,54 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     deinit {
+        NotificationCenter.default.removeObserver(self)
         detailTimer?.cancel()
         if let powerSourceRunLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), powerSourceRunLoopSource, .defaultMode)
         }
+    }
+
+    @objc private func togglePause() {
+        setPaused(!isPaused)
+    }
+
+    private func setPaused(_ paused: Bool) {
+        guard isPaused != paused else { return }
+        isPaused = paused
+        dataEpoch += 1
+        monitor.setPaused(paused)
+        NotificationCenter.default.post(
+            name: .mactopPauseStateChanged,
+            object: self,
+            userInfo: ["isPaused": paused]
+        )
+
+        if paused {
+            clearDisplayData()
+        }
+    }
+
+    private func clearDisplayData() {
+        latestCPU = nil
+        latestRAM = nil
+        latestGPU = nil
+        latestPower = nil
+        latestNet = nil
+        latestCPUProcesses = []
+        latestRAMProcesses = []
+        latestNetProcesses = []
+
+        cpuView.showPlaceholder()
+        ramView.showPlaceholder()
+        gpuView.showPlaceholder()
+        powerView.showPlaceholder()
+        netView.showPlaceholder()
+
+        cpuPopupView.clearData()
+        ramPopupView.clearData()
+        gpuPopupView.clearData()
+        powerPopupView.clearData()
+        netPopupView.clearData()
     }
 
     private func installPowerSourceObserver() {
@@ -193,6 +251,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func refreshProcesses(for index: Int) {
+        guard !isPaused else { return }
+        let epoch = dataEpoch
         switch index {
         case 0:
             guard !netProcessReadInFlight else { return }
@@ -203,6 +263,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     self.netProcessReadInFlight = false
+                    guard !self.isPaused, self.dataEpoch == epoch else { return }
                     self.latestNetProcesses = procs
                     if self.netPanel.isVisible {
                         self.netPopupView.updateProcesses(procs)
@@ -218,6 +279,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     self.cpuProcessReadInFlight = false
+                    guard !self.isPaused, self.dataEpoch == epoch else { return }
                     self.latestCPUProcesses = procs
                     if self.cpuPanel.isVisible, let latestCPU = self.latestCPU {
                         self.cpuPopupView.update(latestCPU, processes: procs)
@@ -233,6 +295,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     self.ramProcessReadInFlight = false
+                    guard !self.isPaused, self.dataEpoch == epoch else { return }
                     self.latestRAMProcesses = procs
                     if self.ramPanel.isVisible, let latestRAM = self.latestRAM {
                         self.ramPopupView.update(latestRAM, processes: procs)
@@ -345,6 +408,8 @@ final class SystemMonitor {
     private var powerReadInFlight = false
     private var netReadInFlight = false
     private var historyEnabled = Array(repeating: false, count: 5)
+    private var isPaused = false
+    private var dataEpoch = 0
 
     init(config: Config,
          onCPU: @escaping (CPUDetail) -> Void,
@@ -376,19 +441,25 @@ final class SystemMonitor {
                             onRAM: @escaping (RAMDetail) -> Void,
                             onGPU: @escaping (GPUDetail) -> Void,
                             onNet: @escaping (NetDetail) -> Void) {
+        guard !isPaused else { return }
+
         let includeNetHistory = historyEnabled[0]
         let includeCPUHistory = historyEnabled[1]
         let includeRAMHistory = historyEnabled[2]
         let includeGPUHistory = historyEnabled[3]
         let includePowerHistory = historyEnabled[4]
+        let epoch = dataEpoch
 
         if !cpuReadInFlight {
             cpuReadInFlight = true
             cpuQueue.async { [weak self] in
                 guard let self else { return }
                 let cpu = self.cpuReader.read(includeHistory: includeCPUHistory)
-                DispatchQueue.main.async { onCPU(cpu) }
-                self.coordinatorQueue.async { self.cpuReadInFlight = false }
+                self.coordinatorQueue.async {
+                    self.cpuReadInFlight = false
+                    guard !self.isPaused, self.dataEpoch == epoch else { return }
+                    DispatchQueue.main.async { onCPU(cpu) }
+                }
             }
         }
 
@@ -397,8 +468,11 @@ final class SystemMonitor {
             ramQueue.async { [weak self] in
                 guard let self else { return }
                 let ram = self.ramReader.read(includeHistory: includeRAMHistory)
-                DispatchQueue.main.async { onRAM(ram) }
-                self.coordinatorQueue.async { self.ramReadInFlight = false }
+                self.coordinatorQueue.async {
+                    self.ramReadInFlight = false
+                    guard !self.isPaused, self.dataEpoch == epoch else { return }
+                    DispatchQueue.main.async { onRAM(ram) }
+                }
             }
         }
 
@@ -407,8 +481,11 @@ final class SystemMonitor {
             gpuQueue.async { [weak self] in
                 guard let self else { return }
                 let gpu = self.gpuReader.read(includeHistory: includeGPUHistory)
-                DispatchQueue.main.async { onGPU(gpu) }
-                self.coordinatorQueue.async { self.gpuReadInFlight = false }
+                self.coordinatorQueue.async {
+                    self.gpuReadInFlight = false
+                    guard !self.isPaused, self.dataEpoch == epoch else { return }
+                    DispatchQueue.main.async { onGPU(gpu) }
+                }
             }
         }
 
@@ -417,8 +494,11 @@ final class SystemMonitor {
             powerQueue.async { [weak self] in
                 guard let self else { return }
                 let power = self.powerReader.read(includeHistory: includePowerHistory)
-                DispatchQueue.main.async { self.onPower(power) }
-                self.coordinatorQueue.async { self.powerReadInFlight = false }
+                self.coordinatorQueue.async {
+                    self.powerReadInFlight = false
+                    guard !self.isPaused, self.dataEpoch == epoch else { return }
+                    DispatchQueue.main.async { self.onPower(power) }
+                }
             }
         }
 
@@ -427,8 +507,11 @@ final class SystemMonitor {
             netQueue.async { [weak self] in
                 guard let self else { return }
                 let net = self.netReader.read(includeHistory: includeNetHistory)
-                DispatchQueue.main.async { onNet(net) }
-                self.coordinatorQueue.async { self.netReadInFlight = false }
+                self.coordinatorQueue.async {
+                    self.netReadInFlight = false
+                    guard !self.isPaused, self.dataEpoch == epoch else { return }
+                    DispatchQueue.main.async { onNet(net) }
+                }
             }
         }
     }
@@ -444,6 +527,26 @@ final class SystemMonitor {
         coordinatorQueue.async { [weak self] in
             self?.historyEnabled = Array(repeating: false, count: 5)
         }
+    }
+
+    func setPaused(_ paused: Bool) {
+        coordinatorQueue.async { [weak self] in
+            guard let self else { return }
+            self.isPaused = paused
+            self.dataEpoch += 1
+            if paused {
+                self.historyEnabled = Array(repeating: false, count: 5)
+                self.clearReaderData()
+            }
+        }
+    }
+
+    private func clearReaderData() {
+        cpuQueue.async { [weak self] in self?.cpuReader.clearData() }
+        ramQueue.async { [weak self] in self?.ramReader.clearData() }
+        gpuQueue.async { [weak self] in self?.gpuReader.clearData() }
+        powerQueue.async { [weak self] in self?.powerReader.clearData() }
+        netQueue.async { [weak self] in self?.netReader.clearData() }
     }
 
     func powerSourceChanged() {

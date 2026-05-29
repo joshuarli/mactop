@@ -30,6 +30,14 @@ private struct ScalarHistory {
 
     var capacity: Int { values.count }
 
+    mutating func removeAll() {
+        dates = Array(repeating: .distantPast, count: values.count)
+        values = Array(repeating: 0, count: values.count)
+        nextIndex = 0
+        count = 0
+        smoothed = nil
+    }
+
     mutating func append(_ value: Double) {
         let value = smoothedValue(value, previous: smoothed)
         smoothed = value
@@ -72,6 +80,16 @@ private struct PairHistory {
     }
 
     var capacity: Int { upValues.count }
+
+    mutating func removeAll() {
+        dates = Array(repeating: .distantPast, count: upValues.count)
+        upValues = Array(repeating: 0, count: upValues.count)
+        downValues = Array(repeating: 0, count: downValues.count)
+        nextIndex = 0
+        count = 0
+        smoothedUp = nil
+        smoothedDown = nil
+    }
 
     mutating func append(up: Double, down: Double) {
         let up = smoothedValue(up, previous: smoothedUp)
@@ -146,6 +164,13 @@ final class CPUReader {
 
     init(updateInterval: Double = 1) {
         history = ScalarHistory(capacity: graphSampleCapacity(updateInterval: updateInterval))
+    }
+
+    func clearData() {
+        prev.removeAll(keepingCapacity: true)
+        ticks.removeAll(keepingCapacity: true)
+        perCore.removeAll(keepingCapacity: true)
+        history.removeAll()
     }
 
     func read(includeHistory: Bool = false) -> CPUDetail {
@@ -391,6 +416,10 @@ final class RAMReader {
         history = ScalarHistory(capacity: graphSampleCapacity(updateInterval: updateInterval))
     }
 
+    func clearData() {
+        history.removeAll()
+    }
+
     func read(includeHistory: Bool = false) -> RAMDetail {
         var stats = vm_statistics64()
         var count = mach_msg_type_number_t(
@@ -491,6 +520,15 @@ final class GPUReader {
         history = ScalarHistory(capacity: capacity)
         renderHistory = ScalarHistory(capacity: capacity)
         tilerHistory = ScalarHistory(capacity: capacity)
+    }
+
+    func clearData() {
+        history.removeAll()
+        renderHistory.removeAll()
+        tilerHistory.removeAll()
+        total = 0
+        render = 0
+        tiler = 0
     }
 
     deinit {
@@ -682,6 +720,14 @@ final class PowerReader {
             let capacity = max(capacity, 1)
             dates = Array(repeating: .distantPast, count: capacity)
             samples = Array(repeating: PowerHistorySample(total: 0, modeled: 0, cpu: 0, gpu: 0, ane: 0, memory: 0, media: 0, display: 0, other: 0), count: capacity)
+        }
+
+        mutating func removeAll() {
+            dates = Array(repeating: .distantPast, count: samples.count)
+            samples = Array(repeating: PowerHistorySample(total: 0, modeled: 0, cpu: 0, gpu: 0, ane: 0, memory: 0, media: 0, display: 0, other: 0), count: samples.count)
+            nextIndex = 0
+            count = 0
+            smoothed = nil
         }
 
         mutating func append(_ sample: PowerSample, at date: Date) {
@@ -1080,6 +1126,13 @@ final class PowerReader {
         history = PowerHistory(capacity: graphSampleCapacity(updateInterval: updateInterval))
     }
 
+    func clearData() {
+        history.removeAll()
+        systemOverhead = nil
+        lastRawSystem = nil
+        current = nil
+    }
+
     func invalidateChargingCache() {
         cachedCharging = nil
         rawSystemLastRead = .distantPast
@@ -1206,6 +1259,15 @@ final class NetReader {
 
     init(updateInterval: Double = 1) {
         history = PairHistory(capacity: graphSampleCapacity(updateInterval: updateInterval))
+    }
+
+    func clearData() {
+        prevUp = 0
+        prevDown = 0
+        cumulativeUp = 0
+        cumulativeDown = 0
+        lastTime = Date()
+        history.removeAll()
     }
 
     func read(includeHistory: Bool = false) -> NetDetail {

@@ -21,6 +21,12 @@ final class MiniView: NSView {
         }
     }
 
+    func showPlaceholder() {
+        displayedPercent = -1
+        valueString = NSAttributedString(string: "--", attributes: Self.valueAttrs)
+        needsDisplay = true
+    }
+
     private static let labelAttrs: [NSAttributedString.Key: Any] = [
         .font: NSFont.systemFont(ofSize: 7, weight: .light),
         .foregroundColor: NSColor.labelColor,
@@ -65,6 +71,12 @@ final class PowerView: NSView {
             valueString = NSAttributedString(string: text, attributes: Self.valueAttrs)
             needsDisplay = true
         }
+    }
+
+    func showPlaceholder() {
+        displayedValue = "--W"
+        valueString = NSAttributedString(string: "--W", attributes: Self.valueAttrs)
+        needsDisplay = true
     }
 
     private static let labelAttrs: [NSAttributedString.Key: Any] = [
@@ -122,6 +134,14 @@ final class SpeedView: NSView {
             downloadText = Self.fmtSpeed(download)
             needsDisplay = true
         }
+    }
+
+    func showPlaceholder() {
+        upload = -1
+        download = -1
+        uploadText = "--"
+        downloadText = "--"
+        needsDisplay = true
     }
 
     private static let textAttrs: [NSAttributedString.Key: Any] = {

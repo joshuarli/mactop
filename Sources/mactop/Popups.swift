@@ -9,6 +9,11 @@ private let margins: CGFloat       = 8
 private let spacing: CGFloat       = 2
 private let initialChartSamples = 2
 
+extension Notification.Name {
+    static let mactopTogglePause = Notification.Name("mactop.togglePause")
+    static let mactopPauseStateChanged = Notification.Name("mactop.pauseStateChanged")
+}
+
 // MARK: - Shared field classes (matching Stats' LabelField / ValueField exactly)
 
 private final class LabelField: NSTextField {
@@ -165,6 +170,10 @@ private final class ProcessesView: NSView {
         }
     }
 
+    func clear() {
+        setProcesses([]) { _ in "" }
+    }
+
     private func iconForProcess(_ process: TopProcess) -> NSImage? {
         if process.pid > 0 {
             if let cached = iconCacheByPID[process.pid] { return cached }
@@ -216,6 +225,7 @@ private func speedTuple(_ bytes: Double) -> (String, String) {
 private final class PopupChromeView: NSView {
     private let foreground: NSVisualEffectView
     private let background: NSView
+    private let pauseButton: NSButton
 
     init(content: NSView) {
         let size = NSSize(
@@ -224,6 +234,7 @@ private final class PopupChromeView: NSView {
         )
         foreground = NSVisualEffectView(frame: NSRect(origin: .zero, size: size))
         background = NSView(frame: foreground.bounds)
+        pauseButton = Self.makePauseButton(panelHeight: size.height)
         super.init(frame: NSRect(origin: .zero, size: size))
 
         wantsLayer = true
@@ -243,13 +254,50 @@ private final class PopupChromeView: NSView {
         content.setFrameOrigin(NSPoint(x: margins, y: margins))
         addSubview(foreground, positioned: .below, relativeTo: nil)
         addSubview(content)
+        pauseButton.target = self
+        addSubview(pauseButton)
         addSubview(Self.makeQuitButton(panelHeight: size.height))
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(pauseStateChanged(_:)),
+            name: .mactopPauseStateChanged,
+            object: nil
+        )
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
     override func updateLayer() {
         background.layer?.backgroundColor = isDarkMode ? .clear : NSColor.white.cgColor
+    }
+
+    @objc private func togglePause() {
+        NotificationCenter.default.post(name: .mactopTogglePause, object: self)
+    }
+
+    @objc private func pauseStateChanged(_ notification: Notification) {
+        let isPaused = notification.userInfo?["isPaused"] as? Bool ?? false
+        pauseButton.image = NSImage(
+            systemSymbolName: isPaused ? "play.circle.fill" : "pause.circle.fill",
+            accessibilityDescription: isPaused ? "Resume" : "Pause"
+        )
+        pauseButton.toolTip = isPaused ? "Resume data collection" : "Pause data collection"
+    }
+
+    private static func makePauseButton(panelHeight: CGFloat) -> NSButton {
+        let button = NSButton(frame: NSRect(x: 26, y: panelHeight - 22, width: 16, height: 16))
+        button.image = NSImage(systemSymbolName: "pause.circle.fill", accessibilityDescription: "Pause")
+        button.imageScaling = .scaleProportionallyDown
+        button.isBordered = false
+        button.bezelStyle = .regularSquare
+        button.action = #selector(togglePause)
+        button.toolTip = "Pause data collection"
+        button.autoresizingMask = [.minYMargin, .maxXMargin]
+        return button
     }
 
     private static func makeQuitButton(panelHeight: CGFloat) -> NSButton {
@@ -424,6 +472,7 @@ final class CPUPopupView: NSStackView {
         idleField.stringValue   = "\(Int((d.idle   * 100).rounded()))%"
         uptimeField.stringValue = d.uptime
 
+        circle.setText(nil)
         circle.setSegments([
             ColorValue(d.system, color: systemColor),
             ColorValue(d.user,   color: userColor)
@@ -454,6 +503,19 @@ final class CPUPopupView: NSStackView {
         processesView.setProcesses(processes) { v in
             String(format: v < 10 ? "%.1f%%" : "%.0f%%", v)
         }
+    }
+
+    func clearData() {
+        systemField.stringValue = "--"
+        userField.stringValue = "--"
+        idleField.stringValue = "--"
+        uptimeField.stringValue = "--"
+        circle.setText("--")
+        circle.setSegments([])
+        circle.setValue(0)
+        lineChart.setValues([])
+        columnChart.setValues([])
+        processesView.clear()
     }
 }
 
@@ -595,6 +657,7 @@ final class RAMPopupView: NSStackView {
         freeField.stringValue  = fmtMemory(d.freeBytes)
         swapField.stringValue  = fmtMemory(d.swapBytes)
 
+        circle.setText(nil)
         circle.setSegments([
             ColorValue(d.totalBytes > 0 ? Double(d.appBytes)        / Double(d.totalBytes) : 0, color: appColor),
             ColorValue(d.totalBytes > 0 ? Double(d.wiredBytes)      / Double(d.totalBytes) : 0, color: wiredColor),
@@ -609,6 +672,21 @@ final class RAMPopupView: NSStackView {
         lineChart.setValues(d.history)
 
         processesView.setProcesses(processes) { v in fmtMemory(UInt64(v)) }
+    }
+
+    func clearData() {
+        usedField.stringValue = "--"
+        appField.stringValue = "--"
+        wiredField.stringValue = "--"
+        compField.stringValue = "--"
+        freeField.stringValue = "--"
+        swapField.stringValue = "--"
+        circle.setText("--")
+        circle.setSegments([])
+        circle.setValue(0)
+        level.setActiveSegment(0)
+        lineChart.setValues([])
+        processesView.clear()
     }
 }
 
@@ -765,6 +843,19 @@ final class GPUPopupView: NSStackView {
         tilerChart.reinit(max(initialChartSamples, d.historyCapacity))
         tilerChart.setValues(d.tilerHistory)
     }
+
+    func clearData() {
+        modelLabel.stringValue = "--"
+        gpuCircle.setValue(0)
+        gpuCircle.setText("--")
+        gpuChart.setValues([])
+        renderCircle.setValue(0)
+        renderCircle.setText("--")
+        renderChart.setValues([])
+        tilerCircle.setValue(0)
+        tilerCircle.setText("--")
+        tilerChart.setValues([])
+    }
 }
 
 // MARK: - Power Popup
@@ -904,6 +995,25 @@ final class PowerPopupView: NSStackView {
         }
 
         chart.setValues(d.history)
+    }
+
+    func clearData() {
+        systemValue.stringValue = "--W"
+        modeledValue.stringValue = "--W"
+        cpuValue.stringValue = "--W"
+        gpuValue.stringValue = "--W"
+        aneValue.stringValue = "--W"
+        memoryValue.stringValue = "--W"
+        mediaValue.stringValue = "--W"
+        displayValue.stringValue = "--W"
+        otherValue.stringValue = "--W"
+        adapterValue.stringValue = "--"
+        systemLoadValue.stringValue = "--W"
+        batteryValue.stringValue = "--"
+        chargeLabel.stringValue = "Charge"
+        chargeValue.stringValue = "--W"
+        flowView.showPlaceholder()
+        chart.setValues([])
     }
 
     private func updateCharging(_ detail: ChargingDetail?) {
@@ -1227,5 +1337,40 @@ final class NetPopupView: NSStackView {
 
         usageChart.reinit(max(initialChartSamples, d.historyCapacity))
         usageChart.setValues(d.history)
+    }
+
+    func clearData() {
+        setPlaceholderSpeedFields()
+        totalUpField.stringValue = "--"
+        totalDownField.stringValue = "--"
+        statusField.stringValue = "--"
+        interfaceField.stringValue = "--"
+        ifaceStatusField.stringValue = "--"
+        localIPField.stringValue = "--"
+        publicIPField.stringValue = "--"
+        usageChart.setValues([])
+        netProcessesView.clear()
+    }
+
+    private func setPlaceholderSpeedFields() {
+        let value = "--"
+        let valueW = value.widthOfString(usingFont: .systemFont(ofSize: 26, weight: .light)) + 5
+        let halfW = popupWidth / 2
+
+        if let uploadView, let uploadValueField, let uploadUnitField {
+            uploadView.setFrameSize(NSSize(width: valueW, height: uploadView.frame.height))
+            uploadView.setFrameOrigin(NSPoint(x: (halfW - valueW)/2, y: uploadView.frame.origin.y))
+            uploadValueField.setFrameSize(NSSize(width: valueW, height: 30))
+            uploadValueField.stringValue = value
+            uploadUnitField.stringValue = ""
+        }
+
+        if let downloadView, let downloadValueField, let downloadUnitField {
+            downloadView.setFrameSize(NSSize(width: valueW, height: downloadView.frame.height))
+            downloadView.setFrameOrigin(NSPoint(x: (halfW - valueW)/2, y: downloadView.frame.origin.y))
+            downloadValueField.setFrameSize(NSSize(width: valueW, height: 30))
+            downloadValueField.stringValue = value
+            downloadUnitField.stringValue = ""
+        }
     }
 }

@@ -148,7 +148,7 @@ final class PieChartView: NSView {
         needsDisplay = true
     }
     func setActiveSegment(_ idx: Int) { activeSegment = idx; needsDisplay = true }
-    func setText(_ v: String) { text = v; needsDisplay = true }
+    func setText(_ v: String?) { text = v; needsDisplay = true }
     func setSegments(_ s: [ColorValue]) { segments = s; needsDisplay = true }
     func setNonActiveSegmentColor(_ c: NSColor) { nonActiveSegmentColor = c; needsDisplay = true }
 }
@@ -566,14 +566,27 @@ final class StackedPowerChartView: NSView {
 
 final class PowerFlowView: NSView {
     private var charging: ChargingDetail?
+    private var showsPlaceholder = false
 
     func update(_ detail: ChargingDetail?) {
+        showsPlaceholder = false
         charging = detail
+        needsDisplay = true
+    }
+
+    func showPlaceholder() {
+        showsPlaceholder = true
+        charging = nil
         needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+
+        if showsPlaceholder {
+            drawText("--", at: CGPoint(x: bounds.midX, y: 28), align: .center, color: .tertiaryLabelColor)
+            return
+        }
 
         guard let charging else {
             drawText("Charging data unavailable", at: CGPoint(x: 10, y: 28), align: .left, color: .tertiaryLabelColor)
