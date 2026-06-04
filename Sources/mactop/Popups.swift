@@ -879,11 +879,6 @@ final class PowerPopupView: NSStackView {
     private var mediaValue: ValueField!
     private var displayValue: ValueField!
     private var otherValue: ValueField!
-    private var adapterValue: ValueField!
-    private var systemLoadValue: ValueField!
-    private var batteryValue: ValueField!
-    private var chargeLabel: LabelField!
-    private var chargeValue: ValueField!
     private var chart: StackedPowerChartView!
     private var flowView: PowerFlowView!
 
@@ -895,11 +890,9 @@ final class PowerPopupView: NSStackView {
         layer?.cornerRadius = 2
 
         addArrangedSubview(separatorView("Power"))
+        addArrangedSubview(initFlow())
         initRows()
         addArrangedSubview(initChart())
-        addArrangedSubview(separatorView("Charging"))
-        initChargingRows()
-        addArrangedSubview(initFlow())
         recalcHeight()
     }
 
@@ -926,13 +919,6 @@ final class PowerPopupView: NSStackView {
         (_, _, mediaValue) = popupWithColorRow(self, color: mediaColor, title: "Media", value: "--W")
         (_, _, displayValue) = popupWithColorRow(self, color: displayColor, title: "Display", value: "--W")
         (_, _, otherValue) = popupWithColorRow(self, color: otherColor, title: "Other SoC", value: "--W")
-    }
-
-    private func initChargingRows() {
-        (_, adapterValue, _) = popupRow(self, title: "Adapter", value: "--")
-        (_, systemLoadValue, _) = popupRow(self, title: "System", value: "--W")
-        (_, batteryValue, _) = popupRow(self, title: "Battery", value: "--")
-        (chargeLabel, chargeValue, _) = popupRow(self, title: "Charge", value: "--W")
     }
 
     private func initFlow() -> NSView {
@@ -1007,41 +993,12 @@ final class PowerPopupView: NSStackView {
         mediaValue.stringValue = "--W"
         displayValue.stringValue = "--W"
         otherValue.stringValue = "--W"
-        adapterValue.stringValue = "--"
-        systemLoadValue.stringValue = "--W"
-        batteryValue.stringValue = "--"
-        chargeLabel.stringValue = "Charge"
-        chargeValue.stringValue = "--W"
         flowView.showPlaceholder()
         chart.setValues([])
     }
 
     private func updateCharging(_ detail: ChargingDetail?) {
         flowView.update(detail)
-        guard let detail else {
-            adapterValue.stringValue = "Unavailable"
-            systemLoadValue.stringValue = "--W"
-            batteryValue.stringValue = "Unavailable"
-            chargeLabel.stringValue = "Charge"
-            chargeValue.stringValue = "--W"
-            return
-        }
-
-        if let adapterWatts = detail.adapterWatts {
-            adapterValue.stringValue = fmtPower(adapterWatts) + " max"
-        } else {
-            adapterValue.stringValue = detail.adapterName ?? (detail.externalConnected ? "Connected" : "Not connected")
-        }
-        systemLoadValue.stringValue = fmtPower(detail.inputWatts)
-        let percent = detail.batteryFraction.map { "\(Int(round($0 * 100)))%" }
-        batteryValue.stringValue = [detail.status, percent].compactMap { $0 }.joined(separator: " ")
-        if let batteryWatts = detail.batteryWatts, batteryWatts != 0 {
-            chargeLabel.stringValue = batteryWatts > 0 ? "Charge" : "Discharge"
-            chargeValue.stringValue = (batteryWatts > 0 ? "+" : "") + fmtPower(abs(batteryWatts))
-        } else {
-            chargeLabel.stringValue = "Charge"
-            chargeValue.stringValue = detail.isFullyCharged ? "Full" : "--W"
-        }
     }
 
     private func fmtPower(_ watts: Double?) -> String {

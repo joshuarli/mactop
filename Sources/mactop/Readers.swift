@@ -668,9 +668,15 @@ struct ChargingDetail {
     var batteryWatts: Double?
     var batteryFraction: Double?
     var wallWatts: Double?
+    // SystemEnergyConsumed from IOKit telemetry: actual CPU/GPU/etc consumption,
+    // excludes battery charging power. Preferred over inputWatts for system load display.
+    var energyConsumedWatts: Double?
     var chargerWatts: Double? {
         guard let inputWatts else { return nil }
         return inputWatts + max(batteryWatts ?? 0, 0)
+    }
+    var consumptionWatts: Double? {
+        energyConsumedWatts ?? inputWatts
     }
     var status: String {
         if !externalConnected { return "Battery" }
@@ -1003,6 +1009,9 @@ final class PowerReader {
     }
 
     private final class BatteryPowerReader {
+        private let debugEnabled = ProcessInfo.processInfo.environment["MACTOP_DEBUG_BATTERY"] == "1"
+        private var didLogDebug = false
+
         func read() -> ChargingDetail? {
             let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
             guard service != 0 else { return nil }
@@ -1013,6 +1022,23 @@ final class PowerReader {
                   let properties = unmanagedProperties?.takeRetainedValue() as? [String: Any] else { return nil }
 
             let telemetry = properties["PowerTelemetryData"] as? [String: Any]
+
+            if debugEnabled, !didLogDebug {
+                didLogDebug = true
+                var rows: [String] = ["mactop battery telemetry:"]
+                if let telemetry {
+                    for (k, v) in telemetry.sorted(by: { $0.key < $1.key }) {
+                        rows.append("  \(k): \(v)")
+                    }
+                } else {
+                    rows.append("  (PowerTelemetryData unavailable)")
+                    for key in ["Voltage", "AppleRawBatteryVoltage", "InstantAmperage", "Amperage", "IsCharging", "ExternalConnected"] {
+                        if let v = properties[key] { rows.append("  \(key): \(v)") }
+                    }
+                }
+                fputs(rows.joined(separator: "\n") + "\n", stderr)
+            }
+
             let systemWatts = systemWatts(properties: properties, telemetry: telemetry)
             let batteryWatts = numeric(telemetry?["BatteryPower"]).flatMap { batteryPowerWatts($0) }
             let batteryFraction = batteryFraction(properties)
@@ -1027,7 +1053,8 @@ final class PowerReader {
                 inputWatts: systemWatts,
                 batteryWatts: batteryWatts,
                 batteryFraction: batteryFraction,
-                wallWatts: numeric(telemetry?["WallEnergyEstimate"]).map { $0 / 1_000 }
+                wallWatts: numeric(telemetry?["WallEnergyEstimate"]).map { $0 / 1_000 },
+                energyConsumedWatts: numeric(telemetry?["SystemEnergyConsumed"]).map { wattsFromMilliwatts($0) }
             )
         }
 
@@ -1147,7 +1174,7 @@ final class PowerReader {
         }
 
         let charging = readChargingDetail()
-        let rawSystem = charging?.inputWatts
+        let rawSystem = charging?.consumptionWatts
         if let sample = modeledPowerReader?.readPower() {
             if let rawSystem, (lastRawSystem != rawSystem || systemOverhead == nil) {
                 systemOverhead = max(0, rawSystem - sample.modeled)

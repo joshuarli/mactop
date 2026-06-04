@@ -593,11 +593,10 @@ final class PowerFlowView: NSView {
             return
         }
 
-        let systemWatts = max(charging.inputWatts ?? 0, 0)
+        let systemWatts = max(charging.consumptionWatts ?? 0, 0)
         let batteryWatts = charging.batteryWatts ?? 0
-        let chargeWatts = max(batteryWatts, 0)
         let dischargeWatts = max(-batteryWatts, 0)
-        let adapterWatts = charging.externalConnected ? max(charging.chargerWatts ?? (systemWatts + chargeWatts), 0) : 0
+        let toBattery = max((charging.inputWatts ?? 0) - (charging.energyConsumedWatts ?? charging.inputWatts ?? 0), 0)
         let batteryFraction = charging.batteryFraction
         let batteryPercent = batteryFraction.map { "\(Int(round($0 * 100)))%" }
 
@@ -614,17 +613,15 @@ final class PowerFlowView: NSView {
         }
 
         if charging.externalConnected {
-            let color: NSColor = chargeWatts > 0 || charging.isCharging ? .systemYellow : .systemGreen
+            let color: NSColor = toBattery > 0 || charging.isCharging ? .systemYellow : .systemGreen
             drawFill(fraction: batteryFraction ?? 1, color: color)
 
-            let title = chargeWatts > 0 || charging.isCharging ? "Charging battery" : "Power adapter"
-            let center = chargeWatts > 0 ? "+" + fmt(chargeWatts) : fmt(adapterWatts)
+            let title = toBattery > 0 || charging.isCharging ? "Charging" : "Discharging"
+            let center = toBattery > 0 ? "+" + fmt(toBattery) : (charging.isFullyCharged ? "Full" : fmt(systemWatts))
             let right = batteryPercent ?? charging.status
             drawText(title, at: CGPoint(x: 10, y: 49), align: .left, color: .secondaryLabelColor)
             drawText(center, at: CGPoint(x: bounds.midX, y: 49), align: .center, color: color, weight: .medium)
             drawText(right, at: CGPoint(x: bounds.width - 10, y: 49), align: .right, color: .secondaryLabelColor)
-            drawText("Adapter input " + fmt(adapterWatts), at: CGPoint(x: 10, y: 8), align: .left, color: .secondaryLabelColor)
-            drawText("System " + fmt(systemWatts), at: CGPoint(x: bounds.width - 10, y: 8), align: .right, color: .secondaryLabelColor)
         } else if dischargeWatts > 0 {
             let color = batteryColor(fraction: batteryFraction)
             drawFill(fraction: batteryFraction ?? 1, color: color)
