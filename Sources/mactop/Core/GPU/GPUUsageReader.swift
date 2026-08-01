@@ -4,18 +4,18 @@ import IOKit
 
 // Reads GPU, renderer, and tiler utilization from IOKit IOAccelerator statistics.
 
-struct GPUUsageDetail {
-    var total: Double
-    var render: Double
-    var tiler: Double
-    var model: String
-    var history: [MetricHistoryPoint<Double>]
-    var renderHistory: [MetricHistoryPoint<Double>]
-    var tilerHistory: [MetricHistoryPoint<Double>]
-    var historyCapacity: Int
+public struct GPUUsageDetail {
+    public var total: Double
+    public var render: Double
+    public var tiler: Double
+    public var model: String
+    public var history: [MetricHistoryPoint<Double>]
+    public var renderHistory: [MetricHistoryPoint<Double>]
+    public var tilerHistory: [MetricHistoryPoint<Double>]
+    public var historyCapacity: Int
 }
 
-final class GPUUsageReader {
+public final class GPUUsageReader {
     private var history: ScalarHistory
     private var renderHistory: ScalarHistory
     private var tilerHistory: ScalarHistory
@@ -24,14 +24,14 @@ final class GPUUsageReader {
     private var tiler: Double = 0
     private var acceleratorService: io_object_t = 0
 
-    init(updateInterval: Double = 3) {
+    public init(updateInterval: Double = 3) {
         let capacity = metricGraphSampleCapacity(updateInterval: updateInterval)
         history = ScalarHistory(capacity: capacity)
         renderHistory = ScalarHistory(capacity: capacity)
         tilerHistory = ScalarHistory(capacity: capacity)
     }
 
-    func clearGPUUsageHistory() {
+    public func clearGPUUsageHistory() {
         history.removeAll()
         renderHistory.removeAll()
         tilerHistory.removeAll()
@@ -55,7 +55,7 @@ final class GPUUsageReader {
         return brand.isEmpty ? "GPU" : brand + " GPU"
     }()
 
-    func readGPUUsageDetail(includeHistory: Bool = false) -> GPUUsageDetail {
+    public func readGPUUsageDetail(includeHistory: Bool = false) -> GPUUsageDetail {
         if readCachedService() {
             return detail(includeHistory: includeHistory)
         }

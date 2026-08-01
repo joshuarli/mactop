@@ -3,7 +3,7 @@ import Foundation
 
 // Reads per-process network byte counters from Apple's private NetworkStatistics ABI;
 // the reader stays dormant until the network popup requests a visible process list.
-final class NetworkProcessReader {
+public final class NetworkProcessReader {
     private final class NativeReader {
         private typealias NStatManagerCreateFn = @convention(c) (
             CFAllocator?,
@@ -179,7 +179,9 @@ final class NetworkProcessReader {
     private var prev:     [Int32: (name: String, in: UInt64, out: UInt64)] = [:]
     private var prevTime: Date = .distantPast
 
-    func readTopNetworkProcessMetrics(count limit: Int = 8) -> [RankedProcessMetric] {
+    public init() {}
+
+    public func readTopNetworkProcessMetrics(count limit: Int = 8) -> [RankedProcessMetric] {
         guard let nativeReader else { return [] }
         let now = Date()
         let dt  = now.timeIntervalSince(prevTime)

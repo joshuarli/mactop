@@ -3,20 +3,20 @@ import Foundation
 
 // Reads aggregate memory pressure, VM usage, swap usage, and RAM chart history
 // from Mach VM statistics and sysctl.
-struct RAMUsageDetail {
-    var total: Double
-    var appBytes: UInt64
-    var wiredBytes: UInt64
-    var compressedBytes: UInt64
-    var freeBytes: UInt64
-    var swapBytes: UInt64
-    var totalBytes: UInt64
-    var pressureLevel: Int   // 0=normal, 1=warn, 2=critical
-    var history: [MetricHistoryPoint<Double>]
-    var historyCapacity: Int
+public struct RAMUsageDetail {
+    public var total: Double
+    public var appBytes: UInt64
+    public var wiredBytes: UInt64
+    public var compressedBytes: UInt64
+    public var freeBytes: UInt64
+    public var swapBytes: UInt64
+    public var totalBytes: UInt64
+    public var pressureLevel: Int   // 0=normal, 1=warn, 2=critical
+    public var history: [MetricHistoryPoint<Double>]
+    public var historyCapacity: Int
 }
 
-final class RAMUsageReader {
+public final class RAMUsageReader {
     private let totalBytes: UInt64 = {
         var n: UInt64 = 0
         var size = MemoryLayout<UInt64>.size
@@ -29,15 +29,15 @@ final class RAMUsageReader {
     private var slowStatsLastRead = Date.distantPast
     private let slowStatsCacheInterval: TimeInterval = 5
 
-    init(updateInterval: Double = 1) {
+    public init(updateInterval: Double = 1) {
         history = ScalarHistory(capacity: metricGraphSampleCapacity(updateInterval: updateInterval))
     }
 
-    func clearRAMUsageHistory() {
+    public func clearRAMUsageHistory() {
         history.removeAll()
     }
 
-    func readRAMUsageDetail(includeHistory: Bool = false) -> RAMUsageDetail {
+    public func readRAMUsageDetail(includeHistory: Bool = false) -> RAMUsageDetail {
         var stats = vm_statistics64()
         var count = mach_msg_type_number_t(
             MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size

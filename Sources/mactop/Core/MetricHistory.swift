@@ -1,13 +1,18 @@
 import Foundation
 
-let metricGraphHistoryWindow: TimeInterval = 5 * 60
+public let metricGraphHistoryWindow: TimeInterval = 5 * 60
 private let metricGraphSmoothingAlpha = 0.3
 
 // Keep real sample timestamps so charts can represent long unavailable spans
 // without allocating one placeholder entry for every missed update.
-struct MetricHistoryPoint<Value> {
-    var date: Date
-    var value: Value
+public struct MetricHistoryPoint<Value> {
+    public var date: Date
+    public var value: Value
+
+    public init(date: Date, value: Value) {
+        self.date = date
+        self.value = value
+    }
 }
 
 func metricGraphSampleCapacity(updateInterval: Double) -> Int {

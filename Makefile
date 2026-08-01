@@ -8,8 +8,11 @@ APP_BUILD  = .build/$(APP)
 APP_PATH   = /Applications/$(APP)
 ICON_PNG   = .build/icon.png
 ICON_ICNS  = .build/icon.icns
+BENCH_SECONDS      ?= 5
+BENCH_INTERVAL     ?= 1
+BENCH_WARMUP_TICKS ?= 2
 
-.PHONY: build app install uninstall clean
+.PHONY: build bench app install uninstall clean
 
 dev: build
 	.build/debug/mactop
@@ -18,6 +21,10 @@ build:
 	swift build
 	codesign -fs - .build/debug/$(BIN)
 	xattr -d com.apple.quarantine $(PWD)/.build/debug/$(BIN) 2>/dev/null || true
+
+bench:
+	swift build --product mactopBench
+	BENCH_SECONDS=$(BENCH_SECONDS) BENCH_INTERVAL=$(BENCH_INTERVAL) BENCH_WARMUP_TICKS=$(BENCH_WARMUP_TICKS) .build/debug/mactopBench
 
 $(ICON_PNG):
 	mkdir -p .build

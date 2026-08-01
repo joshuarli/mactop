@@ -5,24 +5,24 @@ import SystemConfiguration
 // Reads aggregate en* interface byte counters and caches active-interface metadata
 // such as local address, SSID, MAC address, and negotiated link rate.
 
-struct NetworkUsageDetail {
-    var upload: Double
-    var download: Double
-    var totalUp: UInt64
-    var totalDown: UInt64
-    var interfaceName: String     // BSD name, e.g. "en0"
-    var displayName: String       // localized, e.g. "Wi-Fi"
-    var macAddress: String        // e.g. "a4:c3:f0:12:34:56"
-    var ssid: String?             // WiFi only
-    var localIP: String
-    var publicIP: String?         // async-fetched; nil until available
-    var transmitRate: Double      // Mbps from ifi_baudrate
-    var isUp: Bool
-    var history: [MetricHistoryPoint<(up: Double, down: Double)>]
-    var historyCapacity: Int
+public struct NetworkUsageDetail {
+    public var upload: Double
+    public var download: Double
+    public var totalUp: UInt64
+    public var totalDown: UInt64
+    public var interfaceName: String     // BSD name, e.g. "en0"
+    public var displayName: String       // localized, e.g. "Wi-Fi"
+    public var macAddress: String        // e.g. "a4:c3:f0:12:34:56"
+    public var ssid: String?             // WiFi only
+    public var localIP: String
+    public var publicIP: String?         // async-fetched; nil until available
+    public var transmitRate: Double      // Mbps from ifi_baudrate
+    public var isUp: Bool
+    public var history: [MetricHistoryPoint<(up: Double, down: Double)>]
+    public var historyCapacity: Int
 }
 
-final class NetworkInterfaceReader {
+public final class NetworkInterfaceReader {
     private var prevUp: UInt64 = 0
     private var prevDown: UInt64 = 0
     private var cumulativeUp: UInt64 = 0
@@ -47,12 +47,14 @@ final class NetworkInterfaceReader {
     private var publicIPLastFetch = Date.distantPast
     private var cachedPublicIP: String? = nil
     private let publicIPLock = NSLock()
+    private let fetchPublicIP: Bool
 
-    init(updateInterval: Double = 1) {
+    public init(updateInterval: Double = 1, fetchPublicIP: Bool = true) {
+        self.fetchPublicIP = fetchPublicIP
         history = PairHistory(capacity: metricGraphSampleCapacity(updateInterval: updateInterval))
     }
 
-    func clearNetworkUsageHistory() {
+    public func clearNetworkUsageHistory() {
         prevUp = 0
         prevDown = 0
         cumulativeUp = 0
@@ -61,7 +63,7 @@ final class NetworkInterfaceReader {
         history.removeAll()
     }
 
-    func readNetworkUsageDetail(includeHistory: Bool = false) -> NetworkUsageDetail {
+    public func readNetworkUsageDetail(includeHistory: Bool = false) -> NetworkUsageDetail {
         let now = Date()
         let preferredIface = activePrimaryInterfaceName()
         let shouldRefreshDetails = now.timeIntervalSince(detailsLastRead) >= 15
@@ -160,7 +162,9 @@ final class NetworkInterfaceReader {
 
         history.append(up: upRate, down: downRate)
 
-        refreshPublicIP()
+        if fetchPublicIP {
+            refreshPublicIP()
+        }
 
         return NetworkUsageDetail(
             upload: upRate,

@@ -5,19 +5,19 @@ import IOKit
 // Combines AppleSmartBattery system-power telemetry with modeled IOReport component
 // energy so the UI can distinguish whole-machine draw from the SoC subtotal.
 
-struct PowerUsageDetail {
-    var total: Double?
-    var system: Double?
-    var modeled: Double?
-    var charging: BatteryChargingDetail?
-    var cpu: Double?
-    var gpu: Double?
-    var ane: Double?
-    var memory: Double?
-    var media: Double?
-    var display: Double?
-    var other: Double?
-    var history: [MetricHistoryPoint<PowerHistorySample>]
+public struct PowerUsageDetail {
+    public var total: Double?
+    public var system: Double?
+    public var modeled: Double?
+    public var charging: BatteryChargingDetail?
+    public var cpu: Double?
+    public var gpu: Double?
+    public var ane: Double?
+    public var memory: Double?
+    public var media: Double?
+    public var display: Double?
+    public var other: Double?
+    public var history: [MetricHistoryPoint<PowerHistorySample>]
 }
 
 // Apple power telemetry and IOReport counters can briefly contain impossible
@@ -30,18 +30,18 @@ func validatedPowerReadingWatts(_ watts: Double) -> Double? {
     return watts
 }
 
-struct PowerHistorySample: Equatable {
-    var total: Double
-    var modeled: Double
-    var cpu: Double
-    var gpu: Double
-    var ane: Double
-    var memory: Double
-    var media: Double
-    var display: Double
-    var other: Double
+public struct PowerHistorySample: Equatable {
+    public var total: Double
+    public var modeled: Double
+    public var cpu: Double
+    public var gpu: Double
+    public var ane: Double
+    public var memory: Double
+    public var media: Double
+    public var display: Double
+    public var other: Double
 
-    func smoothed(after previous: PowerHistorySample?) -> PowerHistorySample {
+    public func smoothed(after previous: PowerHistorySample?) -> PowerHistorySample {
         guard let previous else { return self }
         return PowerHistorySample(
             total: smoothMetricValue(total, previous: previous.total),
@@ -57,27 +57,27 @@ struct PowerHistorySample: Equatable {
     }
 }
 
-struct BatteryChargingDetail {
-    var externalConnected: Bool
-    var isCharging: Bool
-    var isFullyCharged: Bool
-    var adapterName: String?
-    var adapterWatts: Double?
-    var inputWatts: Double?
-    var batteryWatts: Double?
-    var batteryFraction: Double?
-    var wallWatts: Double?
+public struct BatteryChargingDetail {
+    public var externalConnected: Bool
+    public var isCharging: Bool
+    public var isFullyCharged: Bool
+    public var adapterName: String?
+    public var adapterWatts: Double?
+    public var inputWatts: Double?
+    public var batteryWatts: Double?
+    public var batteryFraction: Double?
+    public var wallWatts: Double?
     // SystemEnergyConsumed from IOKit telemetry: actual CPU/GPU/etc consumption,
     // excludes battery charging power. Preferred over inputWatts for system load display.
-    var energyConsumedWatts: Double?
-    var chargerWatts: Double? {
+    public var energyConsumedWatts: Double?
+    public var chargerWatts: Double? {
         guard let inputWatts else { return nil }
         return inputWatts + max(batteryWatts ?? 0, 0)
     }
-    var consumptionWatts: Double? {
+    public var consumptionWatts: Double? {
         energyConsumedWatts ?? inputWatts
     }
-    var status: String {
+    public var status: String {
         if !externalConnected { return "Battery" }
         if isCharging { return "Charging" }
         if isFullyCharged { return "Full" }
@@ -85,7 +85,7 @@ struct BatteryChargingDetail {
     }
 }
 
-final class PowerTelemetryReader {
+public final class PowerTelemetryReader {
     private struct PowerSample {
         var cpu: Double
         var gpu: Double
@@ -552,17 +552,17 @@ final class PowerTelemetryReader {
     private let chargingCacheInterval: TimeInterval = 2
     private let updateInterval: Double
 
-    init(updateInterval: Double = 1) {
+    public init(updateInterval: Double = 1) {
         self.updateInterval = updateInterval
         history = PowerHistory(capacity: metricGraphSampleCapacity(updateInterval: updateInterval))
     }
 
-    func clearPowerUsageHistory() {
+    public func clearPowerUsageHistory() {
         history.removeAll()
         resetAfterWake()
     }
 
-    func resetAfterWake() {
+    public func resetAfterWake() {
         // Preserve history so the chart can show the sleep interval after wake.
         systemOverhead = nil
         lastRawSystem = nil
@@ -572,14 +572,14 @@ final class PowerTelemetryReader {
         modeledPowerReader?.clearModeledPowerHistory()
     }
 
-    func invalidateChargingCache() {
+    public func invalidateChargingCache() {
         cachedCharging = nil
         rawSystemLastRead = .distantPast
         lastRawSystem = nil
         systemOverhead = nil
     }
 
-    func readPowerUsageDetail(includeHistory: Bool = false) -> PowerUsageDetail {
+    public func readPowerUsageDetail(includeHistory: Bool = false) -> PowerUsageDetail {
         if !modeledPowerReaderAttempted {
             modeledPowerReader = ModeledPowerReader(updateInterval: updateInterval)
             modeledPowerReaderAttempted = true

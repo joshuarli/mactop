@@ -1,4 +1,5 @@
 import AppKit
+import mactopCore
 
 // MARK: - Popup layout constants
 

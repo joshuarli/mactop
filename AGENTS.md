@@ -19,6 +19,8 @@ Source layout is intentionally split so agents can search by subsystem:
 - `Sources/mactop/UI/StatusItemViews.swift`: menu-bar CPU/RAM/GPU percentage, power, and network-speed views.
 - `Sources/mactop/UI/MetricPopups.swift`: metric popup panels and detailed dashboard views.
 - `Sources/mactop/UI/MetricCharts.swift`: popup chart views.
+- `Sources/mactopBench/main.swift`: headless per-subsystem CPU and memory benchmark used by `make bench`.
+- `Package.swift`: `mactopCore`, AppKit `mactop`, and headless `mactopBench` target boundaries.
 - `Tests/mactopTests/ProcessReadersTests.swift`: process ranking, CPU delta, power validation, and `ps` parser tests.
 - `Makefile`: development, install, uninstall, and cleanup tasks.
 
@@ -26,60 +28,36 @@ Core files must remain AppKit-free; UI files own AppKit views and presentation-o
 
 ## Profiling Procedure
 
-Use the debug binary for profiling unless the user explicitly asks for release measurements.
+Use the headless core benchmark for repeatable subsystem baselines:
 
-1. Build and sign first:
+```sh
+make bench
+```
 
-   ```sh
-   make build
-   ```
+`make bench` builds and runs the `mactopBench` executable from `Sources/mactopBench/main.swift`. It links only the `mactopCore` target from `Sources/mactop/Core/`; it does not create an `NSApplication`, register an `NSStatusItem`, construct popup views, run AppKit timers, or execute `SystemMetricsCoordinator`.
 
-2. Confirm Instruments templates are available:
+The benchmark launches one isolated child process per subsystem and starts all five children concurrently: `CPUUsageReader`, `RAMUsageReader`, `GPUUsageReader`, `PowerTelemetryReader`, and `NetworkInterfaceReader`. Each child gets two warm-up ticks, then one read per interval for five seconds, so the default measured wall time is approximately five seconds plus child startup and build time. The output reports the actual completed `ticks`. Per-subsystem allocator and footprint measurements are isolated because each child owns exactly one reader. The network run sets `fetchPublicIP: false` so external HTTP latency and callbacks do not contaminate the baseline.
 
-   ```sh
-   xcrun xctrace list templates
-   ```
+The default cadence can be overridden without editing the repository:
 
-3. Capture launch/idle Time Profiler and Allocations traces:
+```sh
+BENCH_SECONDS=20 BENCH_INTERVAL=1 BENCH_WARMUP_TICKS=3 make bench
+```
 
-   ```sh
-   mkdir -p traces
-   xcrun xctrace record --template 'Time Profiler' --time-limit 20s --output traces/mactop-idle-time.trace --launch -- .build/debug/mactop
-   xcrun xctrace record --template 'Allocations' --time-limit 20s --output traces/mactop-idle-alloc.trace --launch -- .build/debug/mactop
-   ```
+The output columns are defined as follows:
 
-4. Export the Time Profiler table of contents and detailed table when needed:
+- `wall_ms`: elapsed time for that subsystem child’s measured window, including tick sleeps; all rows overlap in wall time.
+- `total_wall`: parent-process elapsed time from launching the five children until all five exit.
+- `cpu_ms`: user plus system CPU time for the benchmark thread, measured with Mach `thread_info`; tick sleeps do not count as CPU time.
+- `cpu_ms/tick`: `cpu_ms` divided by the actual number of completed reads.
+- `peak_live_allocs`: peak increase in live malloc blocks from the post-warm-up baseline, sampled with `malloc_zone_statistics(nil, ...)`.
+- `peak_live_bytes`: peak increase in live malloc bytes from that same baseline.
+- `peak_reserved`: peak increase in allocator-reserved bytes.
+- `peak_footprint`: peak increase in task physical footprint from Mach `TASK_VM_INFO`.
 
-   ```sh
-   xcrun xctrace export --input traces/mactop-idle-time.trace --toc
-   xcrun xctrace export --input traces/mactop-idle-time.trace --xpath '/trace-toc/run[@number="1"]/data/table[@schema="time-profile"]' --output traces/mactop-idle-time-profile.xml
-   ```
+These allocation columns measure live and peak allocator state, not the total number of malloc calls. Use Instruments only after `make bench` identifies a subsystem that needs call-site attribution. For a Time Profiler or Allocations trace, profile `mactopBench` rather than the menu-bar app so launch/AppKit work remains separate from core reader behavior.
 
-5. Capture a settled idle sample after launch noise has passed:
-
-   ```sh
-   .build/debug/mactop & pid=$!
-   sleep 5
-   sample $pid 10 -file traces/mactop-idle.sample.txt
-   kill $pid 2>/dev/null || true
-   wait $pid 2>/dev/null || true
-   ```
-
-6. Inspect sampled hot spots directly:
-
-   ```sh
-   rg -n 'NetworkStatistics|network-statistics|NetworkProcessReader|NetworkSpeedStatusItemView\.draw|PercentageStatusItemView\.draw|NetworkInterfaceReader|activePrimaryInterfaceName|String\.init\(format|PairHistory|GPUUsageReader|CPUUsageReader|RAMUsageReader|DispatchQueue_.*mactop' traces/mactop-idle.sample.txt
-   ```
-
-7. For popup-specific profiling, repeat the settled `sample` run, manually open one popup during the 10-second sample window, and save the result as `traces/mactop-<popup>.sample.txt`.
-
-8. Remove generated trace artifacts before finishing unless the user explicitly asks to keep them:
-
-   ```sh
-   rm -rf traces
-   ```
-
-When interpreting results, ignore launch-only dyld/AppKit setup unless optimizing startup. For idle discipline, look for work outside sleeping run loops: private `NetworkStatistics` callbacks while the network popup is hidden, repeated `SCDynamicStoreCopyValue`, IOKit GPU polling, IOReport power polling, status-item drawing allocations, formatter creation, `String(format:)`, array shifting, and full-list process sorting.
+When interpreting results, compare like-for-like runs on the same machine and power state. The power reader may load private `IOReport` lazily, the GPU reader may discover its IOKit service on the first read, and network interface metadata may change when the active interface changes; keep those first-read effects in the warm-up window unless startup cost is the subject of the investigation.
 
 ## Runtime Flow
 

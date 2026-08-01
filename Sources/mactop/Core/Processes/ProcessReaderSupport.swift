@@ -4,12 +4,12 @@ import Foundation
 // Shared process-row types and ranking/parsing helpers used by CPU, RAM, and network
 // process readers. These helpers are not tied to any one metric source.
 
-struct RankedProcessMetric {
-    var pid: Int32
-    var name: String
-    var value: Double   // CPU: percent (0–100); RAM: bytes
+public struct RankedProcessMetric {
+    public var pid: Int32
+    public var name: String
+    public var value: Double   // CPU: percent (0–100); RAM: bytes
 
-    init(pid: Int32 = 0, name: String, value: Double) {
+    public init(pid: Int32 = 0, name: String, value: Double) {
         self.pid = pid
         self.name = name
         self.value = value

@@ -1,5 +1,5 @@
 import XCTest
-@testable import mactop
+@testable import mactopCore
 
 final class RankedMetricInsertionTests: XCTestCase {
     private func makeRankedMetric(_ value: Double) -> RankedProcessMetric { RankedProcessMetric(name: "\(value)", value: value) }

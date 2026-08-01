@@ -1,10 +1,12 @@
 import Darwin
 import Foundation
 
-final class RAMProcessMemoryReader {
+public final class RAMProcessMemoryReader {
     private var nameCache: [Int32: String] = [:]
 
-    func readTopRAMProcessMetrics(count limit: Int = 8) -> [RankedProcessMetric] {
+    public init() {}
+
+    public func readTopRAMProcessMetrics(count limit: Int = 8) -> [RankedProcessMetric] {
         let pidCount = proc_listallpids(nil, 0)
         guard pidCount > 0 else { return [] }
         var pids = [Int32](repeating: 0, count: Int(pidCount) + 16)

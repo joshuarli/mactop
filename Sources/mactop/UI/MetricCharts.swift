@@ -1,4 +1,5 @@
 import AppKit
+import mactopCore
 
 // MARK: - Support types
 

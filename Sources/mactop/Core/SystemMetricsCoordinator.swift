@@ -2,7 +2,7 @@ import Foundation
 
 // Coordinates timed reads from core metric sources and delivers typed snapshots
 // to the UI without importing AppKit or owning presentation state.
-final class SystemMetricsCoordinator {
+public final class SystemMetricsCoordinator {
     private let cpuReader: CPUUsageReader
     private let ramReader: RAMUsageReader
     private let gpuReader: GPUUsageReader
@@ -26,7 +26,7 @@ final class SystemMetricsCoordinator {
     private var isSleeping = false
     private var dataEpoch = 0
 
-    init(config: MactopConfig,
+    public init(config: MactopConfig,
          onCPU: @escaping (CPUUsageDetail) -> Void,
          onRAM: @escaping (RAMUsageDetail) -> Void,
          onGPU: @escaping (GPUUsageDetail) -> Void,
@@ -131,20 +131,20 @@ final class SystemMetricsCoordinator {
         }
     }
 
-    func setHistoryEnabled(_ enabled: Bool, for index: Int) {
+    public func setHistoryEnabled(_ enabled: Bool, for index: Int) {
         guard historyEnabled.indices.contains(index) else { return }
         coordinatorQueue.async { [weak self] in
             self?.historyEnabled[index] = enabled
         }
     }
 
-    func setAllHistoryDisabled() {
+    public func setAllHistoryDisabled() {
         coordinatorQueue.async { [weak self] in
             self?.historyEnabled = Array(repeating: false, count: 5)
         }
     }
 
-    func setPaused(_ paused: Bool) {
+    public func setPaused(_ paused: Bool) {
         coordinatorQueue.async { [weak self] in
             guard let self else { return }
             self.isPaused = paused
@@ -164,20 +164,20 @@ final class SystemMetricsCoordinator {
         networkQueue.async { [weak self] in self?.networkReader.clearNetworkUsageHistory() }
     }
 
-    func powerSourceChanged() {
+    public func powerSourceChanged() {
         powerQueue.async { [weak self] in
             guard let self else { return }
             self.powerReader.invalidateChargingCache()
         }
     }
 
-    func systemWillSleep() {
+    public func systemWillSleep() {
         coordinatorQueue.async { [weak self] in
             self?.isSleeping = true
         }
     }
 
-    func systemDidWake() {
+    public func systemDidWake() {
         coordinatorQueue.async { [weak self] in
             guard let self else { return }
             self.isSleeping = false

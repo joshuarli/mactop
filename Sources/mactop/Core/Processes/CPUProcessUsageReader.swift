@@ -12,7 +12,7 @@ import Foundation
 //   Runs /bin/ps -Aceo pid,pcpu,comm -r (setuid root, so sees all processes).
 //   Returns p_pctcpu-based values for every process, consistent across users.
 
-final class CPUProcessUsageReader {
+public final class CPUProcessUsageReader {
     // Probe cross-user rusage access once. proc_pid_rusage on PID 1 (launchd, always
     // root-owned) succeeds only with com.apple.system-task-ports.read or setuid root.
     private let nativeCrossUser: Bool = {
@@ -28,7 +28,9 @@ final class CPUProcessUsageReader {
     private var previousTime: TimeInterval?
     private var nameCache: [Int32: String] = [:]
 
-    func readTopCPUProcessMetrics(count limit: Int = 8) -> [RankedProcessMetric] {
+    public init() {}
+
+    public func readTopCPUProcessMetrics(count limit: Int = 8) -> [RankedProcessMetric] {
         nativeCrossUser ? readNativeCPUProcessMetrics(count: limit) : readPSCPUProcessMetrics(count: limit)
     }
 

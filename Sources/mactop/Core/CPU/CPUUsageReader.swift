@@ -3,28 +3,28 @@ import Foundation
 
 // Reads aggregate CPU utilization, per-core utilization, load averages, and uptime
 // from Mach and sysctl sources, retaining only the recent chart history window.
-enum CPUCoreKind {
+public enum CPUCoreKind {
     case efficiency
     case performance
     case unknown
 }
 
-struct CPUUsageDetail {
-    var total: Double
-    var system: Double
-    var user: Double
-    var idle: Double
-    var usagePerCore: [Double]
-    var coreKinds: [CPUCoreKind]
-    var loadAvg1: Double
-    var loadAvg5: Double
-    var loadAvg15: Double
-    var uptime: String
-    var history: [MetricHistoryPoint<Double>]
-    var historyCapacity: Int
+public struct CPUUsageDetail {
+    public var total: Double
+    public var system: Double
+    public var user: Double
+    public var idle: Double
+    public var usagePerCore: [Double]
+    public var coreKinds: [CPUCoreKind]
+    public var loadAvg1: Double
+    public var loadAvg5: Double
+    public var loadAvg15: Double
+    public var uptime: String
+    public var history: [MetricHistoryPoint<Double>]
+    public var historyCapacity: Int
 }
 
-final class CPUUsageReader {
+public final class CPUUsageReader {
     private struct Tick { var user, sys, idle, nice: Double }
     private var prev: [Tick] = []
     private var ticks: [Tick] = []
@@ -44,18 +44,18 @@ final class CPUUsageReader {
     private var loadAvgLastRead = Date.distantPast
     private let loadAvgCacheInterval: TimeInterval = 5
 
-    init(updateInterval: Double = 1) {
+    public init(updateInterval: Double = 1) {
         history = ScalarHistory(capacity: metricGraphSampleCapacity(updateInterval: updateInterval))
     }
 
-    func clearCPUUsageHistory() {
+    public func clearCPUUsageHistory() {
         prev.removeAll(keepingCapacity: true)
         ticks.removeAll(keepingCapacity: true)
         perCore.removeAll(keepingCapacity: true)
         history.removeAll()
     }
 
-    func readCPUUsageDetail(includeHistory: Bool = false) -> CPUUsageDetail {
+    public func readCPUUsageDetail(includeHistory: Bool = false) -> CPUUsageDetail {
         var info: processor_info_array_t?
         var infoCount: mach_msg_type_number_t = 0
         var cpuCount: natural_t = 0
