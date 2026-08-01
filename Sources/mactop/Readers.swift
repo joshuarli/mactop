@@ -631,6 +631,16 @@ struct PowerDetail {
     var history: [PowerHistorySample]
 }
 
+// Apple power telemetry and IOReport counters can briefly contain impossible
+// values while the system is waking. Reject them instead of turning a reset
+// or stale counter into a visible multi-kilowatt reading.
+let maximumReasonablePowerWatts = 2_000.0
+
+func validatedPowerWatts(_ watts: Double) -> Double? {
+    guard watts.isFinite, watts >= 0, watts <= maximumReasonablePowerWatts else { return nil }
+    return watts
+}
+
 struct PowerHistorySample: Equatable {
     var total: Double
     var modeled: Double
@@ -791,8 +801,10 @@ final class PowerReader {
         private let debugEnabled = ProcessInfo.processInfo.environment["MACTOP_DEBUG_POWER"] == "1"
         private var didLogDebug = false
         private var previousSample: (sample: CFDictionary, time: Date)?
+        private let maximumSampleInterval: TimeInterval
 
-        init?() {
+        init?(updateInterval: Double) {
+            maximumSampleInterval = max(5, updateInterval * 2)
             guard let api = Self.loadAPI(),
                   let channels = Self.copyPowerChannels(api: api) else { return nil }
 
@@ -810,6 +822,10 @@ final class PowerReader {
             dlclose(api.handle)
         }
 
+        func clearData() {
+            previousSample = nil
+        }
+
         func readPower() -> PowerSample? {
             guard let next = rawSample() else { return nil }
             guard let previous = previousSample else {
@@ -819,7 +835,7 @@ final class PowerReader {
 
             let elapsed = next.time.timeIntervalSince(previous.time)
             previousSample = next
-            guard elapsed > 0 else { return nil }
+            guard elapsed > 0, elapsed <= maximumSampleInterval else { return nil }
 
             let previousPtr = Unmanaged.passUnretained(previous.sample).toOpaque()
             let nextPtr = Unmanaged.passUnretained(next.sample).toOpaque()
@@ -893,7 +909,7 @@ final class PowerReader {
                         debugRows.append(String(format: "Energy Model/%@: %.3f W", channel, watts))
                     }
                 } else if group.hasPrefix("DCP"), subgroup == "display stats", channel == "power" {
-                    let watts = microwattSecondsToWatts(api.simpleGetIntegerValue(item, 0), elapsed: elapsed)
+                    guard let watts = microwattSecondsToWatts(api.simpleGetIntegerValue(item, 0), elapsed: elapsed) else { continue }
                     dcpDisplay += watts
                     found = true
                     if debugEnabled {
@@ -903,12 +919,13 @@ final class PowerReader {
             }
 
             guard found else { return nil }
+            let display = dcpDisplay > 0 ? dcpDisplay : energyDisplay
+            guard validatedPowerWatts(cpu + gpu + ane + memory + media + display + other) != nil else { return nil }
             if debugEnabled, !didLogDebug {
                 didLogDebug = true
                 fputs((["mactop power channels:"] + debugRows.sorted()).joined(separator: "\n") + "\n", stderr)
             }
 
-            let display = dcpDisplay > 0 ? dcpDisplay : energyDisplay
             return PowerSample(cpu: cpu, gpu: gpu, ane: ane, memory: memory, media: media, display: display, other: other, system: nil, hasModeled: true)
         }
 
@@ -921,11 +938,11 @@ final class PowerReader {
             case "nJ": joules = value / 1_000_000_000
             default: return nil
             }
-            return max(0, joules / elapsed)
+            return validatedPowerWatts(joules / elapsed)
         }
 
-        private func microwattSecondsToWatts(_ value: Int64, elapsed: TimeInterval) -> Double {
-            Double(value) / 1_000_000 / elapsed
+        private func microwattSecondsToWatts(_ value: Int64, elapsed: TimeInterval) -> Double? {
+            validatedPowerWatts(Double(value) / 1_000_000 / elapsed)
         }
 
         private func cfString(_ pointer: UnsafeRawPointer?) -> String {
@@ -1054,32 +1071,32 @@ final class PowerReader {
                 batteryWatts: batteryWatts,
                 batteryFraction: batteryFraction,
                 wallWatts: numeric(telemetry?["WallEnergyEstimate"]).map { $0 / 1_000 },
-                energyConsumedWatts: numeric(telemetry?["SystemEnergyConsumed"]).map { wattsFromMilliwatts($0) }
+                energyConsumedWatts: numeric(telemetry?["SystemEnergyConsumed"]).flatMap { validatedPowerWatts(wattsFromMilliwatts($0)) }
             )
         }
 
         private func systemWatts(properties: [String: Any], telemetry: [String: Any]?) -> Double? {
             if let telemetry {
                 if let power = numeric(telemetry["SystemPowerIn"]), power > 0 {
-                    return wattsFromMilliwatts(power)
+                    return validatedPowerWatts(wattsFromMilliwatts(power))
                 }
                 if let current = numeric(telemetry["SystemCurrentIn"]),
                    let voltage = numeric(telemetry["SystemVoltageIn"]),
                    current > 0, voltage > 0 {
-                    return wattsFromMillivoltsAndMilliamps(voltage: voltage, amperage: current)
+                    return validatedPowerWatts(wattsFromMillivoltsAndMilliamps(voltage: voltage, amperage: current))
                 }
                 if let power = numeric(telemetry["SystemLoad"]), power > 0 {
-                    return wattsFromMilliwatts(power)
+                    return validatedPowerWatts(wattsFromMilliwatts(power))
                 }
                 if let power = numeric(telemetry["BatteryPower"]), power != 0 {
-                    return abs(wattsFromMilliwatts(power))
+                    return validatedPowerWatts(abs(wattsFromMilliwatts(power)))
                 }
             }
 
             let voltage = numeric(properties["Voltage"]) ?? numeric(properties["AppleRawBatteryVoltage"]) ?? 0
             let amperage = numeric(properties["InstantAmperage"]) ?? numeric(properties["Amperage"]) ?? 0
             guard voltage > 0, amperage != 0 else { return nil }
-            return wattsFromMillivoltsAndMilliamps(voltage: voltage, amperage: amperage)
+            return validatedPowerWatts(wattsFromMillivoltsAndMilliamps(voltage: voltage, amperage: amperage))
         }
 
         private func adapterDetails(_ properties: [String: Any]) -> (name: String?, watts: Double?) {
@@ -1148,8 +1165,10 @@ final class PowerReader {
     private var rawSystemLastRead = Date.distantPast
     private var current: PowerSample?
     private let chargingCacheInterval: TimeInterval = 2
+    private let updateInterval: Double
 
     init(updateInterval: Double = 1) {
+        self.updateInterval = updateInterval
         history = PowerHistory(capacity: graphSampleCapacity(updateInterval: updateInterval))
     }
 
@@ -1158,6 +1177,9 @@ final class PowerReader {
         systemOverhead = nil
         lastRawSystem = nil
         current = nil
+        cachedCharging = nil
+        rawSystemLastRead = .distantPast
+        modeledPowerReader?.clearData()
     }
 
     func invalidateChargingCache() {
@@ -1169,7 +1191,7 @@ final class PowerReader {
 
     func read(includeHistory: Bool = false) -> PowerDetail {
         if !modeledPowerReaderAttempted {
-            modeledPowerReader = ModeledPowerReader()
+            modeledPowerReader = ModeledPowerReader(updateInterval: updateInterval)
             modeledPowerReaderAttempted = true
         }
 

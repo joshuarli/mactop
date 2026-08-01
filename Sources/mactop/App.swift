@@ -154,6 +154,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         )
         installPowerSourceObserver()
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(systemDidWake),
+            name: NSWorkspace.didWakeNotification,
+            object: nil
+        )
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(togglePause),
@@ -189,10 +195,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
         detailTimer?.cancel()
         if let powerSourceRunLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), powerSourceRunLoopSource, .defaultMode)
         }
+    }
+
+    @objc private func systemDidWake(_ notification: Notification) {
+        monitor.resetPowerData()
     }
 
     @objc private func togglePause() {
@@ -553,6 +564,12 @@ final class SystemMonitor {
         powerQueue.async { [weak self] in
             guard let self else { return }
             self.powerReader.invalidateChargingCache()
+        }
+    }
+
+    func resetPowerData() {
+        powerQueue.async { [weak self] in
+            self?.powerReader.clearData()
         }
     }
 
