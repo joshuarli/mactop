@@ -105,18 +105,22 @@ public final class GPUUsageReader: @unchecked Sendable {
     }
 
     private func readGPUPerformanceStatisticsUnmeasured(service: io_object_t) -> Bool {
-        var props: Unmanaged<CFMutableDictionary>?
-        guard IORegistryEntryCreateCFProperties(service, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS,
-              let dict = props?.takeRetainedValue() as? [String: Any],
-              let perf = dict["PerformanceStatistics"] as? [String: Any] else { return false }
-
-        // Intel uses "Device Utilization %", Apple Silicon uses "GPU Activity(%)"
-        let pct = perf["Device Utilization %"] as? Double
-               ?? perf["GPU Activity(%)"] as? Double
-               ?? 0
-        total = pct / 100.0
-        render = (perf["Renderer Utilization %"] as? Double ?? 0) / 100.0
-        tiler = (perf["Tiler Utilization %"]   as? Double ?? 0) / 100.0
+        // Fast path: read only the PerformanceStatistics property (~24 µs)
+        // instead of the full property tree (~2.3 ms). Same live values at the
+        // one-second cadence, and more robust than the full read when other
+        // tools (Activity Monitor, Stats) poll the same service. Falls back to
+        // the full property tree if the single-key read misses.
+        if let values = Self.readSingleKeyPerformanceStatistics(service) {
+            total = values.total
+            render = values.render
+            tiler = values.tiler
+        } else if let values = Self.readFullPerformanceStatistics(service) {
+            total = values.total
+            render = values.render
+            tiler = values.tiler
+        } else {
+            return false
+        }
 
         if let phaseRecorder {
             phaseRecorder.measure("history.append") {
@@ -130,6 +134,46 @@ public final class GPUUsageReader: @unchecked Sendable {
             tilerHistory.append(tiler)
         }
         return true
+    }
+
+    private static func readSingleKeyPerformanceStatistics(_ service: io_object_t) -> (total: Double, render: Double, tiler: Double)? {
+        guard let unmanaged = IORegistryEntryCreateCFProperty(
+            service, "PerformanceStatistics" as CFString, kCFAllocatorDefault, 0) else { return nil }
+        let value = unmanaged.takeRetainedValue()
+        guard CFGetTypeID(value) == CFDictionaryGetTypeID() else { return nil }
+        let perf = unsafeBitCast(value, to: CFDictionary.self)
+        return utilizationValues(perf)
+    }
+
+    private static func readFullPerformanceStatistics(_ service: io_object_t) -> (total: Double, render: Double, tiler: Double)? {
+        var props: Unmanaged<CFMutableDictionary>?
+        guard IORegistryEntryCreateCFProperties(service, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+              let dict = props?.takeRetainedValue() as? [String: Any],
+              let perf = dict["PerformanceStatistics"] as? [String: Any] else { return nil }
+        // Intel uses "Device Utilization %", Apple Silicon uses "GPU Activity(%)"
+        let pct = perf["Device Utilization %"] as? Double
+               ?? perf["GPU Activity(%)"] as? Double
+               ?? 0
+        let render = perf["Renderer Utilization %"] as? Double ?? 0
+        let tiler = perf["Tiler Utilization %"] as? Double ?? 0
+        return (pct / 100.0, render / 100.0, tiler / 100.0)
+    }
+
+    private static func utilizationValues(_ perf: CFDictionary) -> (total: Double, render: Double, tiler: Double)? {
+        // Intel uses "Device Utilization %", Apple Silicon uses "GPU Activity(%)"
+        let pct = cfNumber(perf, "Device Utilization %") ?? cfNumber(perf, "GPU Activity(%)") ?? 0
+        let render = cfNumber(perf, "Renderer Utilization %") ?? 0
+        let tiler = cfNumber(perf, "Tiler Utilization %") ?? 0
+        return (pct / 100.0, render / 100.0, tiler / 100.0)
+    }
+
+    private static func cfNumber(_ dict: CFDictionary, _ key: String) -> Double? {
+        let cfKey = key as CFString
+        guard let ptr = CFDictionaryGetValue(dict, Unmanaged.passUnretained(cfKey).toOpaque()) else { return nil }
+        let number = unsafeBitCast(ptr, to: CFNumber.self)
+        var value: Double = 0
+        guard CFNumberGetValue(number, CFNumberType.doubleType, &value) else { return nil }
+        return value
     }
 
     private func detail(includeHistory: Bool = false) -> GPUUsageDetail {

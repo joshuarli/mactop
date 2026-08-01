@@ -1,6 +1,6 @@
 # Performance Plan
 
-This document records the next performance work for `mactop`. The project has migrated to **macOS 26.5.2** and **Swift 6.3.3** (commit 8a4df3e), so the deferred optimizations below are unblocked. The power optimization is complete; GPU is the remaining work.
+This document records the next performance work for `mactop`. The project has migrated to **macOS 26.5.2** and **Swift 6.3.3** (commit 8a4df3e), so the deferred optimizations below are unblocked. The power and GPU optimizations are both complete.
 
 ## Current Baseline
 
@@ -18,7 +18,7 @@ Representative diagnostic run:
 | --- | ---: | ---: | ---: | ---: |
 | CPU | 0.35 ms | 0.070 ms | 0 | 80 B |
 | RAM | 0.14 ms | 0.029 ms | 0 | 16 B |
-| GPU | 13.30 ms | 2.660 ms | 0 | 16 B |
+| GPU | 0.69 ms | 0.139 ms | 0 | 16 B |
 | Power | 11.33 ms | 2.266 ms | 0 | 16 B |
 | Network | 0.36 ms | 0.072 ms | 0 | 16 B |
 
@@ -49,17 +49,18 @@ Representative steady-state power phases over five ticks after the optimization:
 
 ## GPU Bottlenecks
 
-`GPUUsageReader.readGPUUsageDetail()` in `Sources/mactop/Core/GPU/GPUUsageReader.swift` is dominated by the steady-state `ioaccelerator.properties` phase:
+`GPUUsageReader.readGPUUsageDetail()` in `Sources/mactop/Core/GPU/GPUUsageReader.swift` was dominated by the steady-state `ioaccelerator.properties` phase:
 
-- `IORegistryEntryCreateCFProperties(...)` and the `PerformanceStatistics` dictionary bridge account for approximately `2.67 ms` per tick.
+- Before: `IORegistryEntryCreateCFProperties(...)` plus the `PerformanceStatistics` dictionary bridge cost approximately `2.46 ms` per tick (GPU ~2.5 ms CPU per tick total).
+- After: reading only the `PerformanceStatistics` property with `IORegistryEntryCreateCFProperty(...)` and extracting values via `CFDictionaryGetValue`/`CFNumberGetValue` costs approximately `0.12 ms` per tick (GPU ~0.14 ms CPU per tick total). Full-properties read remains as a fallback.
 - History append and history snapshots are negligible.
 - IOAccelerator service discovery is a warm-up-only cost in the current benchmark.
 
-### GPU optimization order
+### GPU optimization status
 
-1. **Avoid broad Swift dictionary bridging.** Test direct Core Foundation lookups for `PerformanceStatistics` and its numeric fields instead of converting the full property tree to `[String: Any]`.
-2. **Compare equivalent IOKit access paths.** Measure `IORegistryEntrySearchCFProperty` or another supported property lookup only if it preserves Intel and Apple Silicon key behavior.
-3. **Consider cadence only after access-path work.** Lowering GPU polling frequency may reduce overhead, but it changes menu-bar freshness and should be a product decision rather than a hidden optimization.
+1. **Avoid broad Swift dictionary bridging.** Done. `readSingleKeyPerformanceStatistics` reads just the `PerformanceStatistics` property and the three numeric fields at the CF level, skipping the full `[String: Any]` bridge of the entire property tree. Verified identical live values at the one-second cadence.
+2. **Compare equivalent IOKit access paths.** Done, with an important caveat: `IORegistryEntrySearchCFProperty` returns a different (stale) snapshot than the full-properties read — do not use it. `IORegistryEntryCreateCFProperty` (single key, no recursion) returns the same live dict as `IORegistryEntryCreateCFProperties` at the one-second cadence and is ~20x cheaper. Also more robust under competition: when another tool (Activity Monitor, Stats) polls the same service, the full-properties path degrades to zeros while the single-key path stays live.
+3. **Consider cadence only after access-path work.** Not needed; the access-path work removed the bottleneck without touching the one-second cadence.
 
 ## Guardrails
 
