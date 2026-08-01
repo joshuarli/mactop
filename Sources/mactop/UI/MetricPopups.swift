@@ -697,14 +697,14 @@ final class RAMPopupView: NSStackView {
 final class GPUPopupView: NSStackView {
 
     private var modelLabel: NSTextField!
-    private var circleRow: NSStackView!
-    private var chartRow: NSStackView!
+    private var statsView: NSView!
     private var gpuCircle: MetricPieChartView!
-    private var renderCircle: MetricPieChartView!
-    private var tilerCircle: MetricPieChartView!
+    private var renderCircle: MetricPieChartView?
+    private var tilerCircle: MetricPieChartView?
     private var gpuChart: MetricLineChartView!
-    private var renderChart: MetricLineChartView!
-    private var tilerChart: MetricLineChartView!
+    private var renderChart: MetricLineChartView?
+    private var tilerChart: MetricLineChartView?
+    private var showsRenderTiler = true
 
     private let circleSize: CGFloat = 50
     private let chartSize:  CGFloat = 60
@@ -715,7 +715,8 @@ final class GPUPopupView: NSStackView {
         wantsLayer = true; layer?.cornerRadius = 2
 
         addArrangedSubview(initTitle())
-        addArrangedSubview(initStats())
+        statsView = makeStatsView(showRenderTiler: true)
+        addArrangedSubview(statsView)
         recalcHeight()
     }
 
@@ -746,7 +747,11 @@ final class GPUPopupView: NSStackView {
         return view
     }
 
-    private func initStats() -> NSView {
+    // Render/tiler columns are shown only when the driver reports them
+    // independently. On chips that mirror the device value into all three keys
+    // the duplicate graphs would be misleading, so those columns collapse to a
+    // single centered GPU circle and full-width chart.
+    private func makeStatsView(showRenderTiler: Bool) -> NSView {
         let labelH: CGFloat = 18
         let circleRowH = circleSize + 20
         let chartRowH = chartSize + 20
@@ -758,82 +763,125 @@ final class GPUPopupView: NSStackView {
         labelRow.orientation = .horizontal
         labelRow.distribution = .fillEqually
         labelRow.edgeInsets = NSEdgeInsets(top: 0, left: 10, bottom: 0, right: 10)
+        labelRow.addArrangedSubview(gpuColumnLabel("GPU"))
+        if showRenderTiler {
+            labelRow.addArrangedSubview(gpuColumnLabel("Render"))
+            labelRow.addArrangedSubview(gpuColumnLabel("Tiler"))
+        }
 
-        circleRow = NSStackView(frame: NSRect(x: 0, y: chartRowH, width: popupWidth, height: circleRowH))
-        circleRow.orientation = .horizontal
-        circleRow.distribution = .fillEqually
-        circleRow.alignment = .bottom
-        circleRow.edgeInsets = NSEdgeInsets(top: 4, left: 10, bottom: 0, right: 10)
-
-        chartRow = NSStackView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: chartRowH))
-        chartRow.orientation = .horizontal
-        chartRow.distribution = .fillEqually
-        chartRow.spacing = margins
-        chartRow.edgeInsets = NSEdgeInsets(top: margins, left: margins, bottom: margins, right: margins)
-
-        addGPUColumnLabel("GPU")
-        addGPUColumnLabel("Render")
-        addGPUColumnLabel("Tiler")
-
-        addCircle(id: "GPU utilization")
-        addCircle(id: "Render utilization")
-        addCircle(id: "Tiler utilization")
-        addChart(id: "GPU utilization")
-        addChart(id: "Render utilization")
-        addChart(id: "Tiler utilization")
+        let circleRow = makeCircleRow(showRenderTiler: showRenderTiler)
+        let chartRow = makeChartRow(showRenderTiler: showRenderTiler)
+        circleRow.frame = NSRect(x: 0, y: chartRowH, width: popupWidth, height: circleRowH)
+        chartRow.frame = NSRect(x: 0, y: 0, width: popupWidth, height: chartRowH)
 
         view.addSubview(labelRow)
         view.addSubview(circleRow)
         view.addSubview(chartRow)
         return view
-
-        func addGPUColumnLabel(_ text: String) {
-            let label = NSTextField(labelWithString: text)
-            label.alignment = .center
-            label.textColor = .secondaryLabelColor
-            label.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-            label.isEditable = false
-            label.isBordered = false
-            label.drawsBackground = false
-            labelRow.addArrangedSubview(label)
-        }
     }
 
-    private func addCircle(id: String) {
+    private func gpuColumnLabel(_ text: String) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.alignment = .center
+        label.textColor = .secondaryLabelColor
+        label.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        label.isEditable = false
+        label.isBordered = false
+        label.drawsBackground = false
+        return label
+    }
+
+    private func makeCircle(id: String) -> MetricPieChartView {
         let c = MetricPieChartView(frame: NSRect(x: 0, y: 0, width: circleSize, height: circleSize), openCircle: true)
         c.id = id
-        circleRow.addArrangedSubview(c)
-        switch id {
-        case "GPU utilization":    gpuCircle    = c
-        case "Render utilization": renderCircle = c
-        case "Tiler utilization":  tilerCircle  = c
-        default: break
-        }
+        return c
     }
 
-    private func addChart(id: String) {
+    private func makeChart(id: String) -> MetricLineChartView {
         let c = MetricLineChartView(frame: NSRect(x: 0, y: 0, width: 100, height: chartSize), num: initialChartSamples, fixedMax: 1)
         c.id = id
         c.wantsLayer = true
         c.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
         c.layer?.cornerRadius = 3
-        chartRow.addArrangedSubview(c)
-        switch id {
-        case "GPU utilization":    gpuChart    = c
-        case "Render utilization": renderChart = c
-        case "Tiler utilization":  tilerChart  = c
-        default: break
+        return c
+    }
+
+    private func makeCircleRow(showRenderTiler: Bool) -> NSStackView {
+        let row = NSStackView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: circleSize + 20))
+        row.orientation = .horizontal
+        row.distribution = .fillEqually
+        row.alignment = .bottom
+        row.edgeInsets = NSEdgeInsets(top: 4, left: 10, bottom: 0, right: 10)
+
+        let gpu = makeCircle(id: "GPU utilization")
+        gpuCircle = gpu
+        if showRenderTiler {
+            let render = makeCircle(id: "Render utilization")
+            let tiler = makeCircle(id: "Tiler utilization")
+            renderCircle = render
+            tilerCircle = tiler
+            row.addArrangedSubview(gpu)
+            row.addArrangedSubview(render)
+            row.addArrangedSubview(tiler)
+        } else {
+            // A stack view resizes arranged subviews to fill, so pin the
+            // fixed-size circle inside a full-width container that centers it.
+            let container = NSView()
+            gpu.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(gpu)
+            gpu.centerXAnchor.constraint(equalTo: container.centerXAnchor).isActive = true
+            gpu.centerYAnchor.constraint(equalTo: container.centerYAnchor).isActive = true
+            gpu.widthAnchor.constraint(equalToConstant: circleSize).isActive = true
+            gpu.heightAnchor.constraint(equalToConstant: circleSize).isActive = true
+            row.addArrangedSubview(container)
         }
+        return row
+    }
+
+    private func makeChartRow(showRenderTiler: Bool) -> NSStackView {
+        let row = NSStackView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: chartSize + 20))
+        row.orientation = .horizontal
+        row.distribution = .fillEqually
+        row.spacing = margins
+        row.edgeInsets = NSEdgeInsets(top: margins, left: margins, bottom: margins, right: margins)
+
+        let gpu = makeChart(id: "GPU utilization")
+        gpuChart = gpu
+        row.addArrangedSubview(gpu)
+        if showRenderTiler {
+            let render = makeChart(id: "Render utilization")
+            let tiler = makeChart(id: "Tiler utilization")
+            renderChart = render
+            tilerChart = tiler
+            row.addArrangedSubview(render)
+            row.addArrangedSubview(tiler)
+        }
+        return row
+    }
+
+    private func setShowsRenderTiler(_ show: Bool) {
+        guard show != showsRenderTiler else { return }
+        showsRenderTiler = show
+        let newStats = makeStatsView(showRenderTiler: show)
+        if let statsView {
+            removeArrangedSubview(statsView)
+            statsView.removeFromSuperview()
+        }
+        statsView = newStats
+        insertArrangedSubview(newStats, at: 1)
+        recalcHeight()
     }
 
     func updateGPUUsage(_ detail: GPUUsageDetail, syncHistory _: Bool = false) {
         modelLabel.stringValue = detail.model
+        setShowsRenderTiler(detail.hasRenderTilerSplit)
 
         gpuCircle.setFraction(detail.total)
         gpuCircle.setCenterText("\(Int((detail.total * 100).rounded()))%")
         gpuChart.resetMetricHistory(sampleCount: max(initialChartSamples, detail.historyCapacity))
         gpuChart.setMetricHistory(detail.history)
 
+        guard let renderCircle, let tilerCircle, let renderChart, let tilerChart else { return }
         renderCircle.setFraction(detail.render)
         renderCircle.setCenterText("\(Int((detail.render * 100).rounded()))%")
         renderChart.resetMetricHistory(sampleCount: max(initialChartSamples, detail.historyCapacity))
@@ -850,12 +898,14 @@ final class GPUPopupView: NSStackView {
         gpuCircle.setFraction(0)
         gpuCircle.setCenterText("--")
         gpuChart.setMetricHistory([])
-        renderCircle.setFraction(0)
-        renderCircle.setCenterText("--")
-        renderChart.setMetricHistory([])
-        tilerCircle.setFraction(0)
-        tilerCircle.setCenterText("--")
-        tilerChart.setMetricHistory([])
+        if let renderCircle, let tilerCircle, let renderChart, let tilerChart {
+            renderCircle.setFraction(0)
+            renderCircle.setCenterText("--")
+            renderChart.setMetricHistory([])
+            tilerCircle.setFraction(0)
+            tilerCircle.setCenterText("--")
+            tilerChart.setMetricHistory([])
+        }
     }
 }
 

@@ -13,6 +13,7 @@ public struct GPUUsageDetail: Sendable {
     public var renderHistory: [MetricHistoryPoint<Double>]
     public var tilerHistory: [MetricHistoryPoint<Double>]
     public var historyCapacity: Int
+    public var hasRenderTilerSplit: Bool
 }
 
 public final class GPUUsageReader: @unchecked Sendable {
@@ -24,6 +25,11 @@ public final class GPUUsageReader: @unchecked Sendable {
     private var tiler: Double = 0
     private var acceleratorService: io_object_t = 0
     private let phaseRecorder: CoreReadPhaseRecorder?
+    // Whether the driver reports independent renderer/tiler utilization. Some
+    // chips (e.g. M1/M2) mirror the device value into all three keys; newer
+    // chips (e.g. M3) report genuine splits. Detected at runtime because the
+    // behavior varies by chip and macOS version.
+    private var renderTilerSplit = false
 
     public init(updateInterval: Double = 3, phaseRecorder: CoreReadPhaseRecorder? = nil) {
         self.phaseRecorder = phaseRecorder
@@ -121,6 +127,9 @@ public final class GPUUsageReader: @unchecked Sendable {
         } else {
             return false
         }
+        if abs(render - tiler) > 0.005 {
+            renderTilerSplit = true
+        }
 
         if let phaseRecorder {
             phaseRecorder.measure("history.append") {
@@ -141,7 +150,7 @@ public final class GPUUsageReader: @unchecked Sendable {
             service, "PerformanceStatistics" as CFString, kCFAllocatorDefault, 0) else { return nil }
         let value = unmanaged.takeRetainedValue()
         guard CFGetTypeID(value) == CFDictionaryGetTypeID() else { return nil }
-        let perf = unsafeBitCast(value, to: CFDictionary.self)
+        let perf = unsafeDowncast(value, to: CFDictionary.self)
         return utilizationValues(perf)
     }
 
@@ -150,7 +159,7 @@ public final class GPUUsageReader: @unchecked Sendable {
         guard IORegistryEntryCreateCFProperties(service, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS,
               let dict = props?.takeRetainedValue() as? [String: Any],
               let perf = dict["PerformanceStatistics"] as? [String: Any] else { return nil }
-        // Intel uses "Device Utilization %", Apple Silicon uses "GPU Activity(%)"
+        // "Device Utilization %" and "GPU Activity(%)" both appear across Macs
         let pct = perf["Device Utilization %"] as? Double
                ?? perf["GPU Activity(%)"] as? Double
                ?? 0
@@ -160,7 +169,7 @@ public final class GPUUsageReader: @unchecked Sendable {
     }
 
     private static func utilizationValues(_ perf: CFDictionary) -> (total: Double, render: Double, tiler: Double)? {
-        // Intel uses "Device Utilization %", Apple Silicon uses "GPU Activity(%)"
+        // "Device Utilization %" and "GPU Activity(%)" both appear across Macs
         let pct = cfNumber(perf, "Device Utilization %") ?? cfNumber(perf, "GPU Activity(%)") ?? 0
         let render = cfNumber(perf, "Renderer Utilization %") ?? 0
         let tiler = cfNumber(perf, "Tiler Utilization %") ?? 0
@@ -194,7 +203,8 @@ public final class GPUUsageReader: @unchecked Sendable {
             history: histories.0,
             renderHistory: histories.1,
             tilerHistory: histories.2,
-            historyCapacity: history.capacity
+            historyCapacity: history.capacity,
+            hasRenderTilerSplit: renderTilerSplit
         )
     }
 }
