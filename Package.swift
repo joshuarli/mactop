@@ -16,13 +16,19 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "mactopCore",
-            path: "Sources/mactop/Core",
-            swiftSettings: swift6Settings,
+            name: "mactopPlatform",
+            path: "Sources/mactop/Platform",
+            swiftSettings: [.swiftLanguageMode(.v6)],
             linkerSettings: [
                 .linkedFramework("IOKit"),
                 .linkedFramework("SystemConfiguration"),
             ]
+        ),
+        .target(
+            name: "mactopCore",
+            dependencies: ["mactopPlatform"],
+            path: "Sources/mactop/Core",
+            swiftSettings: swift6Settings,
         ),
         .executableTarget(
             name: "mactop",
