@@ -5,12 +5,12 @@ import Foundation
 //
 // Configure with: defaults write com.mactop UpdateInterval 2
 
-struct Config {
+struct MactopConfig {
     var updateInterval: Double
 
     static let bundleID = "com.mactop"
 
-    static func load() -> Config {
+    static func load() -> MactopConfig {
         let own = UserDefaults(suiteName: bundleID)
 
         func seconds(key: String, fallback: Int) -> Double {
@@ -19,6 +19,6 @@ struct Config {
             return Double(fallback)
         }
 
-        return Config(updateInterval: seconds(key: "UpdateInterval", fallback: 1))
+        return MactopConfig(updateInterval: seconds(key: "UpdateInterval", fallback: 1))
     }
 }

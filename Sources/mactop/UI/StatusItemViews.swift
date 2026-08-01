@@ -1,10 +1,10 @@
 import AppKit
 
-// MARK: - Mini widget (CPU / RAM / GPU)
-// Mirrors Stats' Mini.swift: label (7pt light) on top, value (12pt) on bottom,
+// MARK: - Percentage status item (CPU / RAM / GPU)
+// Mirrors the reference menu-bar widget: label (7pt light) on top, value (12pt) on bottom,
 // monochrome color = labelColor (white in dark mode, black in light mode).
 
-final class MiniView: NSView {
+final class PercentageStatusItemView: NSView {
     let label: String
     private let labelString: NSAttributedString
     private var valueString: NSAttributedString
@@ -21,7 +21,7 @@ final class MiniView: NSView {
         }
     }
 
-    func showPlaceholder() {
+    func showPercentagePlaceholder() {
         displayedPercent = -1
         valueString = NSAttributedString(string: "--", attributes: Self.valueAttrs)
         needsDisplay = true
@@ -56,16 +56,16 @@ final class MiniView: NSView {
     }
 }
 
-// MARK: - Power widget
+// MARK: - Power status item
 
-final class PowerView: NSView {
+final class PowerStatusItemView: NSView {
     private let labelString: NSAttributedString
     private var valueString: NSAttributedString
     private var displayedValue = "--W"
 
     var watts: Double? = nil {
         didSet {
-            let text = watts.map(Self.fmtWatts) ?? "--W"
+            let text = watts.map(Self.formatPowerWatts) ?? "--W"
             guard text != displayedValue else { return }
             displayedValue = text
             valueString = NSAttributedString(string: text, attributes: Self.valueAttrs)
@@ -73,7 +73,7 @@ final class PowerView: NSView {
         }
     }
 
-    func showPlaceholder() {
+    func showPowerPlaceholder() {
         displayedValue = "--W"
         valueString = NSAttributedString(string: "--W", attributes: Self.valueAttrs)
         needsDisplay = true
@@ -102,7 +102,7 @@ final class PowerView: NSView {
         valueString.draw(with: CGRect(x: 0, y: 1, width: w, height: 13))
     }
 
-    private static func fmtWatts(_ watts: Double) -> String {
+    private static func formatPowerWatts(_ watts: Double) -> String {
         switch watts {
         case ..<10:
             return String(format: "%.1fW", watts)
@@ -112,31 +112,31 @@ final class PowerView: NSView {
     }
 }
 
-// MARK: - Speed widget (Network)
-// Mirrors Stats' SpeedWidget drawTwoRows() with icon="dots", displayValueState="oi":
+// MARK: - Network speed status item
+// Mirrors the reference two-row network widget with icon="dots":
 //   top row = upload (red dot), bottom row = download (blue dot).
 // Dots are colored when traffic ≥ 1024 B/s, labelColor otherwise.
 
-final class SpeedView: NSView {
+final class NetworkSpeedStatusItemView: NSView {
     private var uploadText = "0 KB/s"
     private var downloadText = "0 KB/s"
 
     var upload: Int64 = 0 {
         didSet {
             guard upload != oldValue else { return }
-            uploadText = Self.fmtSpeed(upload)
+            uploadText = Self.formatNetworkSpeed(upload)
             needsDisplay = true
         }
     }
     var download: Int64 = 0 {
         didSet {
             guard download != oldValue else { return }
-            downloadText = Self.fmtSpeed(download)
+            downloadText = Self.formatNetworkSpeed(download)
             needsDisplay = true
         }
     }
 
-    func showPlaceholder() {
+    func showNetworkSpeedPlaceholder() {
         upload = -1
         download = -1
         uploadText = "--"
@@ -186,7 +186,7 @@ final class SpeedView: NSView {
             .draw(with: CGRect(x: textX, y: 1, width: textW, height: rowH))
     }
 
-    private static func fmtSpeed(_ bytes: Int64) -> String {
+    private static func formatNetworkSpeed(_ bytes: Int64) -> String {
         let b = Double(bytes)
         switch b {
         case ..<1_000:           return "0 KB/s"

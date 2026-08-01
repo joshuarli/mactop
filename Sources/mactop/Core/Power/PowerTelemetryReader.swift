@@ -1,0 +1,652 @@
+import Darwin
+import Foundation
+import IOKit
+
+// Combines AppleSmartBattery system-power telemetry with modeled IOReport component
+// energy so the UI can distinguish whole-machine draw from the SoC subtotal.
+
+struct PowerUsageDetail {
+    var total: Double?
+    var system: Double?
+    var modeled: Double?
+    var charging: BatteryChargingDetail?
+    var cpu: Double?
+    var gpu: Double?
+    var ane: Double?
+    var memory: Double?
+    var media: Double?
+    var display: Double?
+    var other: Double?
+    var history: [MetricHistoryPoint<PowerHistorySample>]
+}
+
+// Apple power telemetry and IOReport counters can briefly contain impossible
+// values while the system is waking. Reject them instead of turning a reset
+// or stale counter into a visible multi-kilowatt reading.
+let maximumReasonablePowerWatts = 2_000.0
+
+func validatedPowerReadingWatts(_ watts: Double) -> Double? {
+    guard watts.isFinite, watts >= 0, watts <= maximumReasonablePowerWatts else { return nil }
+    return watts
+}
+
+struct PowerHistorySample: Equatable {
+    var total: Double
+    var modeled: Double
+    var cpu: Double
+    var gpu: Double
+    var ane: Double
+    var memory: Double
+    var media: Double
+    var display: Double
+    var other: Double
+
+    func smoothed(after previous: PowerHistorySample?) -> PowerHistorySample {
+        guard let previous else { return self }
+        return PowerHistorySample(
+            total: smoothMetricValue(total, previous: previous.total),
+            modeled: smoothMetricValue(modeled, previous: previous.modeled),
+            cpu: smoothMetricValue(cpu, previous: previous.cpu),
+            gpu: smoothMetricValue(gpu, previous: previous.gpu),
+            ane: smoothMetricValue(ane, previous: previous.ane),
+            memory: smoothMetricValue(memory, previous: previous.memory),
+            media: smoothMetricValue(media, previous: previous.media),
+            display: smoothMetricValue(display, previous: previous.display),
+            other: smoothMetricValue(other, previous: previous.other)
+        )
+    }
+}
+
+struct BatteryChargingDetail {
+    var externalConnected: Bool
+    var isCharging: Bool
+    var isFullyCharged: Bool
+    var adapterName: String?
+    var adapterWatts: Double?
+    var inputWatts: Double?
+    var batteryWatts: Double?
+    var batteryFraction: Double?
+    var wallWatts: Double?
+    // SystemEnergyConsumed from IOKit telemetry: actual CPU/GPU/etc consumption,
+    // excludes battery charging power. Preferred over inputWatts for system load display.
+    var energyConsumedWatts: Double?
+    var chargerWatts: Double? {
+        guard let inputWatts else { return nil }
+        return inputWatts + max(batteryWatts ?? 0, 0)
+    }
+    var consumptionWatts: Double? {
+        energyConsumedWatts ?? inputWatts
+    }
+    var status: String {
+        if !externalConnected { return "Battery" }
+        if isCharging { return "Charging" }
+        if isFullyCharged { return "Full" }
+        return "Connected"
+    }
+}
+
+final class PowerTelemetryReader {
+    private struct PowerSample {
+        var cpu: Double
+        var gpu: Double
+        var ane: Double
+        var memory: Double
+        var media: Double
+        var display: Double
+        var other: Double
+        var system: Double?
+        var hasModeled: Bool
+        var modeled: Double { cpu + gpu + ane + memory + media + display + other }
+        var total: Double { system ?? modeled }
+        var historySample: PowerHistorySample? {
+            guard hasModeled else { return nil }
+            return PowerHistorySample(
+                total: total,
+                modeled: modeled,
+                cpu: cpu,
+                gpu: gpu,
+                ane: ane,
+                memory: memory,
+                media: media,
+                display: display,
+                other: other
+            )
+        }
+    }
+
+    private struct PowerHistory {
+        private var samples: [MetricHistoryPoint<PowerHistorySample>]
+        private var nextIndex = 0
+        private var count = 0
+        private var smoothed: PowerHistorySample?
+
+        init(capacity: Int) {
+            let capacity = max(capacity, 1)
+            samples = Array(repeating: MetricHistoryPoint(date: .distantPast, value: PowerHistorySample(total: 0, modeled: 0, cpu: 0, gpu: 0, ane: 0, memory: 0, media: 0, display: 0, other: 0)), count: capacity)
+        }
+
+        mutating func removeAll() {
+            samples = Array(repeating: MetricHistoryPoint(date: .distantPast, value: PowerHistorySample(total: 0, modeled: 0, cpu: 0, gpu: 0, ane: 0, memory: 0, media: 0, display: 0, other: 0)), count: samples.count)
+            nextIndex = 0
+            count = 0
+            smoothed = nil
+        }
+
+        mutating func append(_ sample: PowerSample, at date: Date) {
+            guard let rawHistorySample = sample.historySample else { return }
+            let historySample = rawHistorySample.smoothed(after: smoothed)
+            smoothed = historySample
+            samples[nextIndex] = MetricHistoryPoint(date: date, value: historySample)
+            nextIndex = (nextIndex + 1) % samples.count
+            count = min(count + 1, samples.count)
+        }
+
+        var values: [MetricHistoryPoint<PowerHistorySample>] {
+            guard count > 0 else { return [] }
+            let cutoff = Date().addingTimeInterval(-metricGraphHistoryWindow)
+            var output: [MetricHistoryPoint<PowerHistorySample>] = []
+            output.reserveCapacity(count)
+            let start = count == samples.count ? nextIndex : 0
+            for offset in 0..<count {
+                let index = (start + offset) % samples.count
+                if samples[index].date >= cutoff {
+                    output.append(samples[index])
+                }
+            }
+            return output
+        }
+    }
+
+    private final class ModeledPowerReader {
+        private struct IOReportAPI {
+            typealias CopyChannelsInGroup = @convention(c) (UnsafeRawPointer?, UnsafeRawPointer?, UInt64, UInt64, UInt64) -> UnsafeRawPointer?
+            typealias CreateSubscription = @convention(c) (UnsafeRawPointer?, UnsafeRawPointer?, UnsafeMutablePointer<UnsafeRawPointer?>?, UInt64, UnsafeRawPointer?) -> UnsafeRawPointer?
+            typealias CreateSamples = @convention(c) (UnsafeRawPointer?, UnsafeRawPointer?, UnsafeRawPointer?) -> UnsafeRawPointer?
+            typealias CreateSamplesDelta = @convention(c) (UnsafeRawPointer?, UnsafeRawPointer?, UnsafeRawPointer?) -> UnsafeRawPointer?
+            typealias MergeChannels = @convention(c) (UnsafeRawPointer?, UnsafeRawPointer?, UnsafeRawPointer?) -> Void
+            typealias ChannelString = @convention(c) (UnsafeRawPointer?) -> UnsafeRawPointer?
+            typealias SimpleIntegerValue = @convention(c) (UnsafeRawPointer?, Int32) -> Int64
+
+            var handle: UnsafeMutableRawPointer
+            var copyChannelsInGroup: CopyChannelsInGroup
+            var createSubscription: CreateSubscription
+            var createSamples: CreateSamples
+            var createSamplesDelta: CreateSamplesDelta
+            var mergeChannels: MergeChannels
+            var channelGetGroup: ChannelString
+            var channelGetSubGroup: ChannelString
+            var channelGetChannelName: ChannelString
+            var channelGetUnitLabel: ChannelString
+            var simpleGetIntegerValue: SimpleIntegerValue
+        }
+
+        private let api: IOReportAPI
+        private let channels: CFMutableDictionary
+        private let subscription: UnsafeRawPointer
+        private let debugEnabled = ProcessInfo.processInfo.environment["MACTOP_DEBUG_POWER"] == "1"
+        private var didLogDebug = false
+        private var previousSample: (sample: CFDictionary, time: Date)?
+        private let maximumSampleInterval: TimeInterval
+
+        init?(updateInterval: Double) {
+            maximumSampleInterval = max(5, updateInterval * 2)
+            guard let api = Self.loadAPI(),
+                  let channels = Self.copyPowerChannels(api: api) else { return nil }
+
+            var returnedChannels: UnsafeRawPointer?
+            let channelsPtr = Unmanaged.passUnretained(channels).toOpaque()
+            guard let subscription = api.createSubscription(nil, channelsPtr, &returnedChannels, 0, nil) else { return nil }
+
+            self.api = api
+            self.channels = channels
+            self.subscription = subscription
+        }
+
+        deinit {
+            Unmanaged<AnyObject>.fromOpaque(subscription).release()
+            dlclose(api.handle)
+        }
+
+        func clearModeledPowerHistory() {
+            previousSample = nil
+        }
+
+        func readModeledPowerSample() -> PowerSample? {
+            guard let next = rawSample() else { return nil }
+            guard let previous = previousSample else {
+                previousSample = next
+                return nil
+            }
+
+            let elapsed = next.time.timeIntervalSince(previous.time)
+            previousSample = next
+            guard elapsed > 0, elapsed <= maximumSampleInterval else { return nil }
+
+            let previousPtr = Unmanaged.passUnretained(previous.sample).toOpaque()
+            let nextPtr = Unmanaged.passUnretained(next.sample).toOpaque()
+            guard let deltaPtr = api.createSamplesDelta(previousPtr, nextPtr, nil) else { return nil }
+            let delta = Unmanaged<CFDictionary>.fromOpaque(deltaPtr).takeRetainedValue()
+
+            return parsePower(delta: delta, elapsed: elapsed)
+        }
+
+        private func rawSample() -> (sample: CFDictionary, time: Date)? {
+            let subscriptionPtr = UnsafeRawPointer(subscription)
+            let channelsPtr = Unmanaged.passUnretained(channels).toOpaque()
+            guard let samplePtr = api.createSamples(subscriptionPtr, channelsPtr, nil) else { return nil }
+            let sample = Unmanaged<CFDictionary>.fromOpaque(samplePtr).takeRetainedValue()
+            return (sample, Date())
+        }
+
+        private func parsePower(delta: CFDictionary, elapsed: TimeInterval) -> PowerSample? {
+            let key = "IOReportChannels" as CFString
+            guard let arrayPtr = CFDictionaryGetValue(delta, Unmanaged.passUnretained(key).toOpaque()) else { return nil }
+            let array = Unmanaged<CFArray>.fromOpaque(arrayPtr).takeUnretainedValue()
+            let count = CFArrayGetCount(array)
+
+            var cpu = 0.0
+            var gpu = 0.0
+            var ane = 0.0
+            var memory = 0.0
+            var media = 0.0
+            var energyDisplay = 0.0
+            var dcpDisplay = 0.0
+            var other = 0.0
+            var found = false
+            var debugRows: [String] = []
+
+            for i in 0..<count {
+                guard let item = CFArrayGetValueAtIndex(array, i) else { continue }
+
+                let group = cfString(api.channelGetGroup(item))
+                let subgroup = cfString(api.channelGetSubGroup(item))
+                let channel = cfString(api.channelGetChannelName(item))
+                let unit = cfString(api.channelGetUnitLabel(item)).trimmingCharacters(in: .whitespacesAndNewlines)
+
+                if group == "Energy Model" {
+                    guard let watts = watts(item: item, unit: unit, elapsed: elapsed) else { continue }
+                    switch channel {
+                    case "GPU Energy":
+                        gpu += watts
+                        found = true
+                    case let name where name.hasSuffix("CPU Energy"):
+                        cpu += watts
+                        found = true
+                    case let name where name.hasPrefix("ANE"):
+                        ane += watts
+                        found = true
+                    case let name where name.hasPrefix("DRAM") || name.hasPrefix("AMCC") || name.hasPrefix("GPU SRAM"):
+                        memory += watts
+                        found = true
+                    case let name where name.hasPrefix("DCS"):
+                        energyDisplay += watts
+                        found = true
+                    case let name where name.hasPrefix("AVE") || name.hasPrefix("ISP") || name.hasPrefix("MSR"):
+                        media += watts
+                        found = true
+                    case let name where name.contains("PCIe") || name.hasPrefix("apciec"):
+                        other += watts
+                        found = true
+                    default:
+                        continue
+                    }
+                    if debugEnabled {
+                        debugRows.append(String(format: "Energy Model/%@: %.3f W", channel, watts))
+                    }
+                } else if group.hasPrefix("DCP"), subgroup == "display stats", channel == "power" {
+                    guard let watts = microwattSecondsToWatts(api.simpleGetIntegerValue(item, 0), elapsed: elapsed) else { continue }
+                    dcpDisplay += watts
+                    found = true
+                    if debugEnabled {
+                        debugRows.append(String(format: "%@/%@/%@: %.3f W", group, subgroup, channel, watts))
+                    }
+                }
+            }
+
+            guard found else { return nil }
+            let display = dcpDisplay > 0 ? dcpDisplay : energyDisplay
+            guard validatedPowerReadingWatts(cpu + gpu + ane + memory + media + display + other) != nil else { return nil }
+            if debugEnabled, !didLogDebug {
+                didLogDebug = true
+                fputs((["mactop power channels:"] + debugRows.sorted()).joined(separator: "\n") + "\n", stderr)
+            }
+
+            return PowerSample(cpu: cpu, gpu: gpu, ane: ane, memory: memory, media: media, display: display, other: other, system: nil, hasModeled: true)
+        }
+
+        private func watts(item: UnsafeRawPointer, unit: String, elapsed: TimeInterval) -> Double? {
+            let value = Double(api.simpleGetIntegerValue(item, 0))
+            let joules: Double
+            switch unit {
+            case "mJ": joules = value / 1_000
+            case "uJ": joules = value / 1_000_000
+            case "nJ": joules = value / 1_000_000_000
+            default: return nil
+            }
+            return validatedPowerReadingWatts(joules / elapsed)
+        }
+
+        private func microwattSecondsToWatts(_ value: Int64, elapsed: TimeInterval) -> Double? {
+            validatedPowerReadingWatts(Double(value) / 1_000_000 / elapsed)
+        }
+
+        private func cfString(_ pointer: UnsafeRawPointer?) -> String {
+            guard let pointer else { return "" }
+            return Unmanaged<CFString>.fromOpaque(pointer).takeUnretainedValue() as String
+        }
+
+        private static func loadAPI() -> IOReportAPI? {
+            let paths = [
+                "/usr/lib/libIOReport.dylib",
+                "libIOReport.dylib",
+                "/System/Library/PrivateFrameworks/IOReport.framework/IOReport",
+                "IOReport",
+            ]
+
+            guard let handle = paths.lazy.compactMap({ dlopen($0, RTLD_LAZY) }).first else { return nil }
+
+            guard let copyChannelsInGroup = symbol(handle, "IOReportCopyChannelsInGroup", as: IOReportAPI.CopyChannelsInGroup.self),
+                  let createSubscription = symbol(handle, "IOReportCreateSubscription", as: IOReportAPI.CreateSubscription.self),
+                  let createSamples = symbol(handle, "IOReportCreateSamples", as: IOReportAPI.CreateSamples.self),
+                  let createSamplesDelta = symbol(handle, "IOReportCreateSamplesDelta", as: IOReportAPI.CreateSamplesDelta.self),
+                  let mergeChannels = symbol(handle, "IOReportMergeChannels", as: IOReportAPI.MergeChannels.self),
+                  let channelGetGroup = symbol(handle, "IOReportChannelGetGroup", as: IOReportAPI.ChannelString.self),
+                  let channelGetSubGroup = symbol(handle, "IOReportChannelGetSubGroup", as: IOReportAPI.ChannelString.self),
+                  let channelGetChannelName = symbol(handle, "IOReportChannelGetChannelName", as: IOReportAPI.ChannelString.self),
+                  let channelGetUnitLabel = symbol(handle, "IOReportChannelGetUnitLabel", as: IOReportAPI.ChannelString.self),
+                  let simpleGetIntegerValue = symbol(handle, "IOReportSimpleGetIntegerValue", as: IOReportAPI.SimpleIntegerValue.self) else {
+                dlclose(handle)
+                return nil
+            }
+
+            return IOReportAPI(
+                handle: handle,
+                copyChannelsInGroup: copyChannelsInGroup,
+                createSubscription: createSubscription,
+                createSamples: createSamples,
+                createSamplesDelta: createSamplesDelta,
+                mergeChannels: mergeChannels,
+                channelGetGroup: channelGetGroup,
+                channelGetSubGroup: channelGetSubGroup,
+                channelGetChannelName: channelGetChannelName,
+                channelGetUnitLabel: channelGetUnitLabel,
+                simpleGetIntegerValue: simpleGetIntegerValue
+            )
+        }
+
+        private static func symbol<T>(_ handle: UnsafeMutableRawPointer, _ name: String, as type: T.Type) -> T? {
+            guard let pointer = dlsym(handle, name) else { return nil }
+            return unsafeBitCast(pointer, to: type)
+        }
+
+        private static func copyPowerChannels(api: IOReportAPI) -> CFMutableDictionary? {
+            let groups = [
+                (group: "Energy Model", subgroup: nil as String?),
+                (group: "DCP", subgroup: nil as String?),
+                (group: "DCPEXT0", subgroup: nil as String?),
+                (group: "DCPEXT1", subgroup: nil as String?),
+            ]
+            var dictionaries: [CFDictionary] = []
+            for entry in groups {
+                let group = entry.group as CFString
+                let groupPtr = Unmanaged.passUnretained(group).toOpaque()
+                let subgroup = entry.subgroup.map { $0 as CFString }
+                let subgroupPtr = subgroup.map { Unmanaged.passUnretained($0).toOpaque() }
+                guard let rawPtr = api.copyChannelsInGroup(groupPtr, subgroupPtr, 0, 0, 0) else { continue }
+                dictionaries.append(Unmanaged<CFDictionary>.fromOpaque(rawPtr).takeRetainedValue())
+            }
+
+            guard let first = dictionaries.first,
+                  let channels = CFDictionaryCreateMutableCopy(kCFAllocatorDefault, CFDictionaryGetCount(first), first) else { return nil }
+
+            let channelsPtr = Unmanaged.passUnretained(channels).toOpaque()
+            for dictionary in dictionaries.dropFirst() {
+                api.mergeChannels(channelsPtr, Unmanaged.passUnretained(dictionary).toOpaque(), nil)
+            }
+
+            let key = "IOReportChannels" as CFString
+            guard CFDictionaryGetValue(channels, Unmanaged.passUnretained(key).toOpaque()) != nil else { return nil }
+            return channels
+        }
+    }
+
+    private final class BatteryPowerReader {
+        private let debugEnabled = ProcessInfo.processInfo.environment["MACTOP_DEBUG_BATTERY"] == "1"
+        private var didLogDebug = false
+
+        func readBatteryChargingDetail() -> BatteryChargingDetail? {
+            let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
+            guard service != 0 else { return nil }
+            defer { IOObjectRelease(service) }
+
+            var unmanagedProperties: Unmanaged<CFMutableDictionary>?
+            guard IORegistryEntryCreateCFProperties(service, &unmanagedProperties, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+                  let properties = unmanagedProperties?.takeRetainedValue() as? [String: Any] else { return nil }
+
+            let telemetry = properties["PowerTelemetryData"] as? [String: Any]
+
+            if debugEnabled, !didLogDebug {
+                didLogDebug = true
+                var rows: [String] = ["mactop battery telemetry:"]
+                if let telemetry {
+                    for (k, v) in telemetry.sorted(by: { $0.key < $1.key }) {
+                        rows.append("  \(k): \(v)")
+                    }
+                } else {
+                    rows.append("  (PowerTelemetryData unavailable)")
+                    for key in ["Voltage", "AppleRawBatteryVoltage", "InstantAmperage", "Amperage", "IsCharging", "ExternalConnected"] {
+                        if let v = properties[key] { rows.append("  \(key): \(v)") }
+                    }
+                }
+                fputs(rows.joined(separator: "\n") + "\n", stderr)
+            }
+
+            let systemWatts = systemWatts(properties: properties, telemetry: telemetry)
+            let batteryWatts = numeric(telemetry?["BatteryPower"]).flatMap { batteryPowerWatts($0) }
+            let batteryFraction = batteryFraction(properties)
+            let adapter = adapterDetails(properties)
+
+            return BatteryChargingDetail(
+                externalConnected: bool(properties["ExternalConnected"]) ?? bool(properties["AppleRawExternalConnected"]) ?? false,
+                isCharging: bool(properties["IsCharging"]) ?? false,
+                isFullyCharged: bool(properties["FullyCharged"]) ?? false,
+                adapterName: adapter.name,
+                adapterWatts: adapter.watts,
+                inputWatts: systemWatts,
+                batteryWatts: batteryWatts,
+                batteryFraction: batteryFraction,
+                wallWatts: numeric(telemetry?["WallEnergyEstimate"]).map { $0 / 1_000 },
+                energyConsumedWatts: numeric(telemetry?["SystemEnergyConsumed"]).flatMap { validatedPowerReadingWatts(wattsFromMilliwatts($0)) }
+            )
+        }
+
+        private func systemWatts(properties: [String: Any], telemetry: [String: Any]?) -> Double? {
+            if let telemetry {
+                if let power = numeric(telemetry["SystemPowerIn"]), power > 0 {
+                    return validatedPowerReadingWatts(wattsFromMilliwatts(power))
+                }
+                if let current = numeric(telemetry["SystemCurrentIn"]),
+                   let voltage = numeric(telemetry["SystemVoltageIn"]),
+                   current > 0, voltage > 0 {
+                    return validatedPowerReadingWatts(wattsFromMillivoltsAndMilliamps(voltage: voltage, amperage: current))
+                }
+                if let power = numeric(telemetry["SystemLoad"]), power > 0 {
+                    return validatedPowerReadingWatts(wattsFromMilliwatts(power))
+                }
+                if let power = numeric(telemetry["BatteryPower"]), power != 0 {
+                    return validatedPowerReadingWatts(abs(wattsFromMilliwatts(power)))
+                }
+            }
+
+            let voltage = numeric(properties["Voltage"]) ?? numeric(properties["AppleRawBatteryVoltage"]) ?? 0
+            let amperage = numeric(properties["InstantAmperage"]) ?? numeric(properties["Amperage"]) ?? 0
+            guard voltage > 0, amperage != 0 else { return nil }
+            return validatedPowerReadingWatts(wattsFromMillivoltsAndMilliamps(voltage: voltage, amperage: amperage))
+        }
+
+        private func adapterDetails(_ properties: [String: Any]) -> (name: String?, watts: Double?) {
+            let details = properties["AdapterDetails"] as? [String: Any]
+                ?? (properties["AppleRawAdapterDetails"] as? [[String: Any]])?.first
+            return (details?["Name"] as? String, numeric(details?["Watts"]))
+        }
+
+        private func batteryPowerWatts(_ milliwatts: Double) -> Double? {
+            guard milliwatts != 0 else { return nil }
+            guard abs(milliwatts) < 1_000_000 else { return nil }
+            return wattsFromMilliwatts(milliwatts)
+        }
+
+        private func wattsFromMilliwatts(_ milliwatts: Double) -> Double {
+            milliwatts / 1_000
+        }
+
+        private func wattsFromMillivoltsAndMilliamps(voltage: Double, amperage: Double) -> Double {
+            abs(voltage * amperage) / 1_000_000
+        }
+
+        private func batteryFraction(_ properties: [String: Any]) -> Double? {
+            let current = numeric(properties["CurrentCapacity"]) ?? numeric(properties["AppleRawCurrentCapacity"])
+            let capacity = numeric(properties["MaxCapacity"]) ?? numeric(properties["AppleRawMaxCapacity"])
+            guard let current, let capacity, capacity > 0 else { return nil }
+            return min(1, max(0, current / capacity))
+        }
+
+        private func bool(_ value: Any?) -> Bool? {
+            switch value {
+            case let value as Bool:
+                return value
+            case let number as NSNumber:
+                return number.boolValue
+            default:
+                return nil
+            }
+        }
+
+        private func numeric(_ value: Any?) -> Double? {
+            switch value {
+            case let number as NSNumber:
+                return number.doubleValue
+            case let value as Int:
+                return Double(value)
+            case let value as Int64:
+                return Double(value)
+            case let value as UInt64:
+                return Double(value)
+            case let value as Double:
+                return value
+            default:
+                return nil
+            }
+        }
+    }
+
+    private var modeledPowerReaderAttempted = false
+    private var modeledPowerReader: ModeledPowerReader?
+    private let batteryPowerReader = BatteryPowerReader()
+    private var history: PowerHistory
+    private var systemOverhead: Double?
+    private var lastRawSystem: Double?
+    private var cachedCharging: BatteryChargingDetail?
+    private var rawSystemLastRead = Date.distantPast
+    private var current: PowerSample?
+    private let chargingCacheInterval: TimeInterval = 2
+    private let updateInterval: Double
+
+    init(updateInterval: Double = 1) {
+        self.updateInterval = updateInterval
+        history = PowerHistory(capacity: metricGraphSampleCapacity(updateInterval: updateInterval))
+    }
+
+    func clearPowerUsageHistory() {
+        history.removeAll()
+        resetAfterWake()
+    }
+
+    func resetAfterWake() {
+        // Preserve history so the chart can show the sleep interval after wake.
+        systemOverhead = nil
+        lastRawSystem = nil
+        current = nil
+        cachedCharging = nil
+        rawSystemLastRead = .distantPast
+        modeledPowerReader?.clearModeledPowerHistory()
+    }
+
+    func invalidateChargingCache() {
+        cachedCharging = nil
+        rawSystemLastRead = .distantPast
+        lastRawSystem = nil
+        systemOverhead = nil
+    }
+
+    func readPowerUsageDetail(includeHistory: Bool = false) -> PowerUsageDetail {
+        if !modeledPowerReaderAttempted {
+            modeledPowerReader = ModeledPowerReader(updateInterval: updateInterval)
+            modeledPowerReaderAttempted = true
+        }
+
+        let charging = readChargingDetail()
+        let rawSystem = charging?.consumptionWatts
+        if let sample = modeledPowerReader?.readModeledPowerSample() {
+            if let rawSystem, (lastRawSystem != rawSystem || systemOverhead == nil) {
+                systemOverhead = max(0, rawSystem - sample.modeled)
+                lastRawSystem = rawSystem
+            }
+            let system = systemOverhead.map { sample.modeled + $0 } ?? rawSystem
+            current = PowerSample(
+                cpu: sample.cpu,
+                gpu: sample.gpu,
+                ane: sample.ane,
+                memory: sample.memory,
+                media: sample.media,
+                display: sample.display,
+                other: sample.other,
+                system: system,
+                hasModeled: true
+            )
+        } else if let current, current.system != rawSystem {
+            self.current = PowerSample(
+                cpu: current.cpu,
+                gpu: current.gpu,
+                ane: current.ane,
+                memory: current.memory,
+                media: current.media,
+                display: current.display,
+                other: current.other,
+                system: rawSystem,
+                hasModeled: current.hasModeled
+            )
+        } else if current == nil, rawSystem != nil {
+            current = PowerSample(cpu: 0, gpu: 0, ane: 0, memory: 0, media: 0, display: 0, other: 0, system: rawSystem, hasModeled: false)
+        }
+
+        if let sample = current {
+            history.append(sample, at: Date())
+        }
+
+        let hasModeled = current?.hasModeled == true
+        return PowerUsageDetail(
+            total: current?.total,
+            system: current?.system,
+            modeled: hasModeled ? current?.modeled : nil,
+            charging: charging,
+            cpu: hasModeled ? current?.cpu : nil,
+            gpu: hasModeled ? current?.gpu : nil,
+            ane: hasModeled ? current?.ane : nil,
+            memory: hasModeled ? current?.memory : nil,
+            media: hasModeled ? current?.media : nil,
+            display: hasModeled ? current?.display : nil,
+            other: hasModeled ? current?.other : nil,
+            history: includeHistory ? history.values : []
+        )
+    }
+
+    private func readChargingDetail() -> BatteryChargingDetail? {
+        let now = Date()
+        if cachedCharging == nil || now.timeIntervalSince(rawSystemLastRead) >= chargingCacheInterval {
+            cachedCharging = batteryPowerReader.readBatteryChargingDetail()
+            rawSystemLastRead = now
+        }
+        return cachedCharging
+    }
+}

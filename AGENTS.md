@@ -1,15 +1,28 @@
 `mactop` is a macOS menu-bar utility for tracking system stats in a short, recent timeframe with the lowest possible runtime overhead.
 
-Core files:
+Source layout is intentionally split so agents can search by subsystem:
 
-- `App.swift`: app lifecycle, `NSStatusItem` registration, popup routing, timers, and `SystemMonitor`.
-- `Views.swift`: small menu-bar drawing views for CPU/RAM/GPU, power, and network speed.
-- `Popups.swift`: popup panels and detailed dashboard views.
-- `Readers.swift`: CPU, RAM, GPU, power, and interface-level network readers.
-- `Processes.swift`: top-process readers for CPU, RAM, and network.
-- `Charts.swift`: popup chart views.
-- `Config.swift`: reads optional update intervals from `UserDefaults`.
+- `Sources/mactop/Core/MetricHistory.swift`: shared metric history buffers and smoothing helpers used by readers and charts.
+- `Sources/mactop/Core/SystemMetricsCoordinator.swift`: interval scheduling and callback delivery for core readers.
+- `Sources/mactop/Core/Configuration/MactopConfig.swift`: optional update-interval configuration from `UserDefaults`.
+- `Sources/mactop/Core/CPU/CPUUsageReader.swift`: Mach CPU totals and per-core history via `CPUUsageReader.readCPUUsageDetail()`.
+- `Sources/mactop/Core/RAM/RAMUsageReader.swift`: Mach VM/RAM totals via `RAMUsageReader.readRAMUsageDetail()`.
+- `Sources/mactop/Core/GPU/GPUUsageReader.swift`: IOKit `IOAccelerator` statistics via `GPUUsageReader.readGPUUsageDetail()`.
+- `Sources/mactop/Core/Power/PowerTelemetryReader.swift`: AppleSmartBattery and private IOReport power telemetry via `PowerTelemetryReader.readPowerUsageDetail()`.
+- `Sources/mactop/Core/Network/NetworkInterfaceReader.swift`: interface counters and SystemConfiguration metadata via `NetworkInterfaceReader.readNetworkUsageDetail()`.
+- `Sources/mactop/Core/Processes/CPUProcessUsageReader.swift`: native/`ps` CPU process ranking via `CPUProcessUsageReader.readTopCPUProcessMetrics()`.
+- `Sources/mactop/Core/Processes/RAMProcessMemoryReader.swift`: per-process physical-footprint ranking via `RAMProcessMemoryReader.readTopRAMProcessMetrics()`.
+- `Sources/mactop/Core/Processes/NetworkProcessReader.swift`: private `NetworkStatistics.framework` process ranking via `NetworkProcessReader.readTopNetworkProcessMetrics()`.
+- `Sources/mactop/Core/Processes/ProcessReaderSupport.swift`: `RankedProcessMetric`, process deltas, sorted insertion, and `ps` parsing.
+- `Sources/mactop/Core/Processes/ProcessDisplayName.swift`: process display-name and bundle-name resolution shared by CPU and RAM readers.
+- `Sources/mactop/UI/MactopApp.swift`: AppKit lifecycle, `NSStatusItem` registration, popup routing, and visible-process refreshes.
+- `Sources/mactop/UI/StatusItemViews.swift`: menu-bar CPU/RAM/GPU percentage, power, and network-speed views.
+- `Sources/mactop/UI/MetricPopups.swift`: metric popup panels and detailed dashboard views.
+- `Sources/mactop/UI/MetricCharts.swift`: popup chart views.
+- `Tests/mactopTests/ProcessReadersTests.swift`: process ranking, CPU delta, power validation, and `ps` parser tests.
 - `Makefile`: development, install, uninstall, and cleanup tasks.
+
+Core files must remain AppKit-free; UI files own AppKit views and presentation-only formatting. A reader returns typed metric data, while a popup or status-item view formats and renders that data.
 
 ## Profiling Procedure
 
@@ -55,7 +68,7 @@ Use the debug binary for profiling unless the user explicitly asks for release m
 6. Inspect sampled hot spots directly:
 
    ```sh
-   rg -n 'NetworkStatistics|network-statistics|NetProcessReader|SpeedView\.draw|MiniView\.draw|NetReader|primaryInterfaceName|String\.init\(format|PairHistory|GPUReader|CPUReader|RAMReader|DispatchQueue_.*mactop' traces/mactop-idle.sample.txt
+   rg -n 'NetworkStatistics|network-statistics|NetworkProcessReader|NetworkSpeedStatusItemView\.draw|PercentageStatusItemView\.draw|NetworkInterfaceReader|activePrimaryInterfaceName|String\.init\(format|PairHistory|GPUUsageReader|CPUUsageReader|RAMUsageReader|DispatchQueue_.*mactop' traces/mactop-idle.sample.txt
    ```
 
 7. For popup-specific profiling, repeat the settled `sample` run, manually open one popup during the 10-second sample window, and save the result as `traces/mactop-<popup>.sample.txt`.
@@ -70,17 +83,17 @@ When interpreting results, ignore launch-only dyld/AppKit setup unless optimizin
 
 ## Runtime Flow
 
-`AppDelegate.applicationDidFinishLaunching` creates five status items: network, CPU, RAM, GPU, PWR. The network item is registered first so macOS is less likely to hide it when menu-bar space is tight. PWR is registered after GPU. `statusPanels` must stay in the same order as `statusItems`, because click routing uses the index.
+`MactopAppDelegate.applicationDidFinishLaunching` creates five status items: network, CPU, RAM, GPU, PWR. The network item is registered first so macOS is less likely to hide it when menu-bar space is tight. PWR is registered after GPU. `statusPanels` must stay in the same order as `statusItems`, because click routing uses the index.
 
-`SystemMonitor` owns the core readers and schedules interval timers:
+`SystemMetricsCoordinator` owns the core readers and schedules interval timers:
 
-- CPU totals: `CPUReader.read()`
-- RAM totals: `RAMReader.read()`
-- GPU: `GPUReader.read()`
-- Power: `PowerReader.read()`
-- Network totals: `NetReader.read()`
+- CPU totals: `CPUUsageReader.readCPUUsageDetail()`
+- RAM totals: `RAMUsageReader.readRAMUsageDetail()`
+- GPU: `GPUUsageReader.readGPUUsageDetail()`
+- Power: `PowerTelemetryReader.readPowerUsageDetail()`
+- Network totals: `NetworkInterfaceReader.readNetworkUsageDetail()`
 
-Top-process readers are separate and visible-only. `AppDelegate` refreshes CPU, RAM, and network process lists on utility queues when the matching popup is visible or opened. Network process reporting lazily initializes the private `NetworkStatistics.framework` reader so hidden idle does not pay for callbacks.
+Top-process readers are separate and visible-only. `MactopAppDelegate` refreshes CPU, RAM, and network process lists on utility queues when the matching popup is visible or opened. Network process reporting lazily initializes the private `NetworkStatistics.framework` reader so hidden idle does not pay for callbacks.
 
 ## Data Sources
 
@@ -109,7 +122,7 @@ GPU uses IOKit `IOAccelerator` performance statistics.
 Power uses two sources:
 
 **System power** (preferred menu-bar total on MacBooks):
-- `PowerReader.BatteryPowerReader` reads `AppleSmartBattery` from IOKit.
+- `PowerTelemetryReader.BatteryPowerReader` reads `AppleSmartBattery` from IOKit.
 - `PowerTelemetryData.SystemPowerIn` is preferred, falling back to `SystemCurrentIn * SystemVoltageIn`, `SystemLoad`, `BatteryPower`, then raw battery `Voltage * InstantAmperage`/`Amperage`.
 - This is intended to represent whole-machine input/draw and includes power outside the SoC: display panel/backlight, radios, storage, USB/Thunderbolt, PMIC/conversion losses, charging/battery behavior, fans where present, and other board rails.
 - `AppleSmartBattery` telemetry can update slowly or stay cached for seconds/minutes on AC/full battery. Keep a System-minus-modeled baseline from that source, then let the live modeled subtotal move within it so menu-bar System power responds to fast IOReport changes.
@@ -117,7 +130,7 @@ Power uses two sources:
 - Charging data also comes from `AppleSmartBattery`: `AdapterDetails.Watts` is the negotiated adapter maximum, `SystemPowerIn` is current system input, and `BatteryPower` is battery charge/discharge when available. The popup's Charging section should keep those concepts separate; do not label adapter max as live draw.
 
 **Modeled component power**:
-- `PowerReader.ModeledPowerReader` dynamically loads private `IOReport` with `dlopen`, trying `/usr/lib/libIOReport.dylib`, `libIOReport.dylib`, the old private framework path, then `IOReport`. Do not link IOReport in `Package.swift`.
+- `PowerTelemetryReader.ModeledPowerReader` dynamically loads private `IOReport` with `dlopen`, trying `/usr/lib/libIOReport.dylib`, `libIOReport.dylib`, the old private framework path, then `IOReport`. Do not link IOReport in `Package.swift`.
 - It subscribes to `Energy Model` plus DCP/DCPEXT display-report groups, samples twice, deltas counters with real elapsed time, and converts `mJ`/`uJ`/`nJ` to watts. Avoid `IOReportCopyAllChannels`; DCP `display stats` subgroup-only subscriptions can return zero deltas for `power`, so use the DCP group and filter to `display stats` while parsing.
 - Channel mapping: `GPU Energy` → GPU; names ending in `CPU Energy` → CPU; names starting with `ANE` → ANE; names starting with `DRAM`, `AMCC`, or `GPU SRAM` → Memory; DCP/DCPEXT `display stats` `power` deltas are preferred for Display, with Energy Model `DCS*` used only as a fallback; names starting with `AVE`, `ISP`, or `MSR` → Media; names containing `PCIe` or starting with `apciec` → Other SoC.
 - Avoid summing detailed CPU/GPU subrails such as `PACC*_CPU*`, `PCPUDTL*`, and similar detail channels into totals; they overlap with aggregate CPU/GPU energy channels and would double-count.
@@ -130,9 +143,8 @@ Network top processes are intended to use the private `NetworkStatistics.framewo
 
 ## Known Network Caveats
 
-`NetReader` uses SystemConfiguration's active IPv4 `PrimaryInterface` for interface metadata, local IP, SSID, MAC, and link speed. It still sums byte counters across `en*` interfaces for the menu-bar aggregate.
+`NetworkInterfaceReader` uses SystemConfiguration's active IPv4 `PrimaryInterface` for interface metadata, local IP, SSID, MAC, and link speed. It still sums byte counters across `en*` interfaces for the menu-bar aggregate.
 
-`NetProcessReader` uses private `NetworkStatistics.framework` callbacks. The add-source APIs can return positive values on success. Count callbacks may omit PID/name and only include byte counters, so per-source state must merge description and count dictionaries by source pointer.
+`NetworkProcessReader` uses private `NetworkStatistics.framework` callbacks. The add-source APIs can return positive values on success. Count callbacks may omit PID/name and only include byte counters, so per-source state must merge description and count dictionaries by source pointer.
 
 Network process reporting should not depend on `nettop`.
-

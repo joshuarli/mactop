@@ -2,7 +2,7 @@ import AppKit
 
 // MARK: - Support types
 
-struct ColorValue {
+struct ChartSegmentValue {
     let value: Double
     var color: NSColor?
     init(_ value: Double, color: NSColor? = nil) {
@@ -26,10 +26,10 @@ extension String {
     }
 }
 
-// MARK: - PieChartView
+// MARK: - MetricPieChartView
 // Closed-circle (CPU/RAM) and open-arc (GPU circles) variants.
 
-final class PieChartView: NSView {
+final class MetricPieChartView: NSView {
     var id: String = UUID().uuidString
 
     private var filled: Bool = false
@@ -40,9 +40,9 @@ final class PieChartView: NSView {
     private var _value: Double? = nil
     private var text: String? = nil
     private var activeSegment: Int? = nil
-    private var segments: [ColorValue] = []
+    private var segments: [ChartSegmentValue] = []
 
-    init(frame: NSRect = .zero, segments: [ColorValue] = [], filled: Bool = false,
+    init(frame: NSRect = .zero, segments: [ChartSegmentValue] = [], filled: Bool = false,
          drawValue: Bool = false, drawNeedle: Bool = false, openCircle: Bool = false) {
         self.filled = filled
         self.drawValue = drawValue
@@ -61,15 +61,15 @@ final class PieChartView: NSView {
         let arcSpan: CGFloat = openCircle ? (3/2) * .pi : fullCircle
 
         if segs.isEmpty {
-            segs = [ColorValue(_value ?? 0, color: .controlAccentColor)]
+            segs = [ChartSegmentValue(_value ?? 0, color: .controlAccentColor)]
         }
 
         if openCircle {
             let total = segs.reduce(0) { $0 + $1.value }
-            if total < 1 { segs.append(ColorValue(1 - total, color: NSColor.lightGray.withAlphaComponent(0.5))) }
+            if total < 1 { segs.append(ChartSegmentValue(1 - total, color: NSColor.lightGray.withAlphaComponent(0.5))) }
         } else {
             let total = segs.reduce(0) { $0 + $1.value }
-            if total < 1 { segs.append(ColorValue(1 - total, color: nonActiveSegmentColor.withAlphaComponent(0.5))) }
+            if total < 1 { segs.append(ChartSegmentValue(1 - total, color: nonActiveSegmentColor.withAlphaComponent(0.5))) }
         }
 
         let center = CGPoint(x: frame.width/2, y: frame.height/2)
@@ -143,23 +143,23 @@ final class PieChartView: NSView {
         }
     }
 
-    func setValue(_ v: Double) {
-        _value = openCircle ? (v > 1 ? v/100 : v) : v
+    func setFraction(_ fraction: Double) {
+        _value = openCircle ? (fraction > 1 ? fraction/100 : fraction) : fraction
         needsDisplay = true
     }
-    func setActiveSegment(_ idx: Int) { activeSegment = idx; needsDisplay = true }
-    func setText(_ v: String?) { text = v; needsDisplay = true }
-    func setSegments(_ s: [ColorValue]) { segments = s; needsDisplay = true }
-    func setNonActiveSegmentColor(_ c: NSColor) { nonActiveSegmentColor = c; needsDisplay = true }
+    func setActiveSegmentIndex(_ index: Int) { activeSegment = index; needsDisplay = true }
+    func setCenterText(_ text: String?) { self.text = text; needsDisplay = true }
+    func setSegmentValues(_ values: [ChartSegmentValue]) { segments = values; needsDisplay = true }
+    func setInactiveSegmentColor(_ color: NSColor) { nonActiveSegmentColor = color; needsDisplay = true }
 }
 
-// MARK: - LineChartView
-// Faithful port of Stats' LineChartView. Gradient fill below line, tooltip on hover.
+// MARK: - MetricLineChartView
+// Faithful port of Stats' MetricLineChartView. Gradient fill below line, tooltip on hover.
 
-final class LineChartView: NSView {
+final class MetricLineChartView: NSView {
     var id: String = UUID().uuidString
 
-    private var points: [HistoryPoint<Double>]
+    private var points: [MetricHistoryPoint<Double>]
     private var pointCapacity: Int
     private var color: NSColor
     private var cursor: NSPoint? = nil
@@ -187,11 +187,11 @@ final class LineChartView: NSView {
         let height = frame.height - offset
         let width = frame.width
         let now = Date()
-        let windowStart = now.addingTimeInterval(-graphHistoryWindow)
+        let windowStart = now.addingTimeInterval(-metricGraphHistoryWindow)
         let x = { (date: Date) in
-            CGFloat(max(0, min(graphHistoryWindow, date.timeIntervalSince(windowStart))) / graphHistoryWindow) * width
+            CGFloat(max(0, min(metricGraphHistoryWindow, date.timeIntervalSince(windowStart))) / metricGraphHistoryWindow) * width
         }
-        let expectedInterval = graphHistoryWindow / Double(pointCapacity)
+        let expectedInterval = metricGraphHistoryWindow / Double(pointCapacity)
         let gapThreshold = max(expectedInterval * 2, 2)
         let maxValue = fixedMax ?? points.map(\.value).max() ?? 1
 
@@ -203,13 +203,13 @@ final class LineChartView: NSView {
         var line: [CGPoint] = []
         var allLines: [[CGPoint]] = []
         var list: [(value: Double, point: CGPoint)] = []
-        var previous: HistoryPoint<Double>?
+        var previous: MetricHistoryPoint<Double>?
 
         for point in points {
             if let previous, point.date.timeIntervalSince(previous.date) > gapThreshold {
                 if !line.isEmpty { allLines.append(line); line = [] }
-                let left = max(0, x(previous.date) + width * CGFloat(expectedInterval / graphHistoryWindow) / 2)
-                let right = min(width, x(point.date) - width * CGFloat(expectedInterval / graphHistoryWindow) / 2)
+                let left = max(0, x(previous.date) + width * CGFloat(expectedInterval / metricGraphHistoryWindow) / 2)
+                let right = min(width, x(point.date) - width * CGFloat(expectedInterval / metricGraphHistoryWindow) / 2)
                 if right > left {
                     NSColor.tertiaryLabelColor.withAlphaComponent(0.14).setFill()
                     ctx.fill(CGRect(x: left, y: 0, width: right - left, height: height))
@@ -271,13 +271,13 @@ final class LineChartView: NSView {
     override func mouseMoved(with event: NSEvent) { cursor = convert(event.locationInWindow, from: nil); needsDisplay = true }
     override func mouseExited(with event: NSEvent) { cursor = nil; needsDisplay = true }
 
-    func addValue(_ v: Double) {
-        points.append(HistoryPoint(date: Date(), value: v))
+    func appendMetricValue(_ value: Double) {
+        points.append(MetricHistoryPoint(date: Date(), value: value))
         if points.count > pointCapacity { points.removeFirst(points.count - pointCapacity) }
         if window?.isVisible ?? false { display() }
     }
 
-    func setValues(_ values: [HistoryPoint<Double>]) {
+    func setMetricHistory(_ values: [MetricHistoryPoint<Double>]) {
         points = Array(values.suffix(pointCapacity))
         if window?.isVisible ?? false {
             display()
@@ -286,26 +286,26 @@ final class LineChartView: NSView {
         }
     }
 
-    func setColor(_ c: NSColor) { color = c; needsDisplay = true }
-    func setFlipY(_ v: Bool) { flipY = v; needsDisplay = true }
+    func setStrokeColor(_ color: NSColor) { self.color = color; needsDisplay = true }
+    func setVerticalAxisFlipped(_ flipped: Bool) { flipY = flipped; needsDisplay = true }
 
-    func reinit(_ num: Int = 60) {
-        pointCapacity = max(num, 1)
+    func resetMetricHistory(sampleCount: Int = 60) {
+        pointCapacity = max(sampleCount, 1)
         if points.count > pointCapacity { points = Array(points.suffix(pointCapacity)) }
         needsDisplay = true
     }
 }
 
-// MARK: - ColumnChartView
-// Per-core usage bars. Faithful port of Stats' ColumnChartView.
+// MARK: - CoreUsageColumnChartView
+// Per-core usage bars. Faithful port of Stats' CoreUsageColumnChartView.
 
-final class ColumnChartView: NSView {
-    private var values: [ColorValue] = []
+final class CoreUsageColumnChartView: NSView {
+    private var values: [ChartSegmentValue] = []
     private var cursor: CGPoint? = nil
 
     init(frame: NSRect = .zero, num: Int) {
         super.init(frame: frame)
-        values = Array(repeating: ColorValue(0, color: .controlAccentColor), count: num)
+        values = Array(repeating: ChartSegmentValue(0, color: .controlAccentColor), count: num)
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.activeAlways, .mouseEnteredAndExited, .mouseMoved, .inVisibleRect], owner: self, userInfo: nil))
     }
 
@@ -366,8 +366,8 @@ final class ColumnChartView: NSView {
         }
     }
 
-    func setValues(_ v: [ColorValue]) {
-        values = v
+    func setCoreUsageValues(_ values: [ChartSegmentValue]) {
+        self.values = values
         if window?.isVisible ?? false {
             display()
         } else {
@@ -380,23 +380,23 @@ final class ColumnChartView: NSView {
     override func mouseExited(with event: NSEvent) { cursor = nil; display() }
 }
 
-// MARK: - NetworkChartView
+// MARK: - NetworkThroughputChartView
 // Two stacked line charts (upload top / download bottom). Faithful port.
 
-final class NetworkChartView: NSView {
-    private var inChart: LineChartView
-    private var outChart: LineChartView
-    private var inValues: [HistoryPoint<Double>] = []
-    private var outValues: [HistoryPoint<Double>] = []
+final class NetworkThroughputChartView: NSView {
+    private var inChart: MetricLineChartView
+    private var outChart: MetricLineChartView
+    private var inValues: [MetricHistoryPoint<Double>] = []
+    private var outValues: [MetricHistoryPoint<Double>] = []
 
     init(frame: NSRect, num: Int, outColor: NSColor = .systemRed, inColor: NSColor = .systemBlue) {
         let h = max(frame.height, 2)
         let topFrame = NSRect(x: 0, y: h/2, width: frame.width, height: h/2)
         let bottomFrame = NSRect(x: 0, y: 0, width: frame.width, height: h/2)
         // upload = out = top, download = in = bottom; download flipped (grows downward)
-        outChart = LineChartView(frame: topFrame, num: num, color: outColor)
-        inChart  = LineChartView(frame: bottomFrame, num: num, color: inColor)
-        inChart.setFlipY(true)
+        outChart = MetricLineChartView(frame: topFrame, num: num, color: outColor)
+        inChart  = MetricLineChartView(frame: bottomFrame, num: num, color: inColor)
+        inChart.setVerticalAxisFlipped(true)
         super.init(frame: frame)
         addSubview(outChart)
         addSubview(inChart)
@@ -404,27 +404,27 @@ final class NetworkChartView: NSView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func addValue(upload: Double, download: Double) {
-        outChart.addValue(upload)
-        inChart.addValue(download)
+    func appendThroughput(upload: Double, download: Double) {
+        outChart.appendMetricValue(upload)
+        inChart.appendMetricValue(download)
     }
 
-    func setValues(_ values: [HistoryPoint<(up: Double, down: Double)>]) {
+    func setThroughputHistory(_ values: [MetricHistoryPoint<(up: Double, down: Double)>]) {
         outValues.removeAll(keepingCapacity: true)
         inValues.removeAll(keepingCapacity: true)
         outValues.reserveCapacity(values.count)
         inValues.reserveCapacity(values.count)
         for value in values {
-            outValues.append(HistoryPoint(date: value.date, value: value.value.up))
-            inValues.append(HistoryPoint(date: value.date, value: value.value.down))
+            outValues.append(MetricHistoryPoint(date: value.date, value: value.value.up))
+            inValues.append(MetricHistoryPoint(date: value.date, value: value.value.down))
         }
-        outChart.setValues(outValues)
-        inChart.setValues(inValues)
+        outChart.setMetricHistory(outValues)
+        inChart.setMetricHistory(inValues)
     }
 
-    func reinit(_ num: Int) {
-        outChart.reinit(num)
-        inChart.reinit(num)
+    func resetThroughputHistory(sampleCount: Int) {
+        outChart.resetMetricHistory(sampleCount: sampleCount)
+        inChart.resetMetricHistory(sampleCount: sampleCount)
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -435,10 +435,10 @@ final class NetworkChartView: NSView {
     }
 }
 
-// MARK: - StackedPowerChartView
+// MARK: - PowerComponentStackedChartView
 
-final class StackedPowerChartView: NSView {
-    private var samples: [HistoryPoint<PowerHistorySample>] = []
+final class PowerComponentStackedChartView: NSView {
+    private var samples: [MetricHistoryPoint<PowerHistorySample>] = []
     private let cpuColor: NSColor
     private let gpuColor: NSColor
     private let aneColor: NSColor
@@ -472,9 +472,9 @@ final class StackedPowerChartView: NSView {
         let width = frame.width
         let height = frame.height
         let now = Date()
-        let windowStart = now.addingTimeInterval(-graphHistoryWindow)
+        let windowStart = now.addingTimeInterval(-metricGraphHistoryWindow)
         let x = { (date: Date) in
-            CGFloat(max(0, min(graphHistoryWindow, date.timeIntervalSince(windowStart))) / graphHistoryWindow) * width
+            CGFloat(max(0, min(metricGraphHistoryWindow, date.timeIntervalSince(windowStart))) / metricGraphHistoryWindow) * width
         }
         let expectedInterval = zip(samples, samples.dropFirst())
             .map { $1.date.timeIntervalSince($0.date) }
@@ -491,7 +491,7 @@ final class StackedPowerChartView: NSView {
             ctx.fill(CGRect(x: left, y: 0, width: right - left, height: height))
         }
 
-        func drawBand(bottom: [HistoryPoint<Double>], top: [HistoryPoint<Double>], color: NSColor, scaleMax: Double, fillAlpha: CGFloat = 0.45, strokeAlpha: CGFloat = 1) {
+        func drawBand(bottom: [MetricHistoryPoint<Double>], top: [MetricHistoryPoint<Double>], color: NSColor, scaleMax: Double, fillAlpha: CGFloat = 0.45, strokeAlpha: CGFloat = 1) {
             guard bottom.count == top.count, top.count > 1 else { return }
 
             func y(_ watts: Double) -> CGFloat {
@@ -531,8 +531,8 @@ final class StackedPowerChartView: NSView {
             }
         }
 
-        func series(_ value: (PowerHistorySample) -> Double) -> [HistoryPoint<Double>] {
-            samples.map { HistoryPoint(date: $0.date, value: value($0.value)) }
+        func series(_ value: (PowerHistorySample) -> Double) -> [MetricHistoryPoint<Double>] {
+            samples.map { MetricHistoryPoint(date: $0.date, value: value($0.value)) }
         }
 
         let cpuTop = series { $0.cpu }
@@ -543,7 +543,7 @@ final class StackedPowerChartView: NSView {
         let displayTop = series { $0.cpu + $0.gpu + $0.ane + $0.memory + $0.media + $0.display }
         let otherTop = series { $0.cpu + $0.gpu + $0.ane + $0.memory + $0.media + $0.display + $0.other }
         let systemTop = series { $0.total }
-        let zero = samples.map { HistoryPoint(date: $0.date, value: 0.0) }
+        let zero = samples.map { MetricHistoryPoint(date: $0.date, value: 0.0) }
         let systemMax = max(systemTop.map(\.value).max() ?? 0, 1)
 
         drawBand(bottom: zero, top: systemTop, color: systemColor, scaleMax: systemMax, fillAlpha: 0.16, strokeAlpha: 0.55)
@@ -556,7 +556,7 @@ final class StackedPowerChartView: NSView {
         drawBand(bottom: displayTop, top: otherTop, color: otherColor, scaleMax: systemMax)
     }
 
-    func setValues(_ values: [HistoryPoint<PowerHistorySample>]) {
+    func setPowerHistory(_ values: [MetricHistoryPoint<PowerHistorySample>]) {
         guard !values.isEmpty else {
             guard !samples.isEmpty || lastSignature != nil else { return }
             samples = []
@@ -581,19 +581,19 @@ final class StackedPowerChartView: NSView {
     }
 }
 
-// MARK: - PowerFlowView
+// MARK: - BatteryPowerFlowView
 
-final class PowerFlowView: NSView {
-    private var charging: ChargingDetail?
+final class BatteryPowerFlowView: NSView {
+    private var charging: BatteryChargingDetail?
     private var showsPlaceholder = false
 
-    func update(_ detail: ChargingDetail?) {
+    func setBatteryChargingDetail(_ detail: BatteryChargingDetail?) {
         showsPlaceholder = false
         charging = detail
         needsDisplay = true
     }
 
-    func showPlaceholder() {
+    func showPowerFlowPlaceholder() {
         showsPlaceholder = true
         charging = nil
         needsDisplay = true
@@ -694,10 +694,10 @@ final class PowerFlowView: NSView {
     }
 }
 
-// MARK: - GridChartView
+// MARK: - ConnectivityHistoryGridChartView
 // Connectivity history grid. Faithful port.
 
-final class GridChartView: NSView {
+final class ConnectivityHistoryGridChartView: NSView {
     private let okColor: NSColor = .systemGreen
     private let notOkColor: NSColor = .systemRed
     private let inactiveColor: NSColor = .underPageBackgroundColor.withAlphaComponent(0.4)
@@ -733,8 +733,8 @@ final class GridChartView: NSView {
         }
     }
 
-    func addValue(_ ok: Bool) {
-        values[nextValueIndex] = ok ? okColor : notOkColor
+    func appendConnectivityStatus(_ isConnected: Bool) {
+        values[nextValueIndex] = isConnected ? okColor : notOkColor
         nextValueIndex = (nextValueIndex + 1) % values.count
         if nextValueIndex == 0 { valuesAreFull = true }
         if window?.isVisible ?? false { display() }

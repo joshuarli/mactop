@@ -1,6 +1,6 @@
 import AppKit
 
-// MARK: - Constants (matching Stats exactly)
+// MARK: - Popup layout constants
 
 private let popupWidth: CGFloat    = 320
 private let sepHeight: CGFloat     = 30
@@ -14,7 +14,7 @@ extension Notification.Name {
     static let mactopPauseStateChanged = Notification.Name("mactop.pauseStateChanged")
 }
 
-// MARK: - Shared field classes (matching Stats' LabelField / ValueField exactly)
+// MARK: - Shared popup field classes
 
 private final class LabelField: NSTextField {
     init(_ label: String = "", frame: NSRect = .zero) {
@@ -44,9 +44,9 @@ private final class ValueField: NSTextField {
     required init?(coder: NSCoder) { fatalError() }
 }
 
-// MARK: - Layout helpers (matching Stats' separatorView / popupRow / popupWithColorRow)
+// MARK: - Popup layout helpers
 
-private func separatorView(_ title: String, width: CGFloat = popupWidth) -> NSView {
+private func makePopupSectionHeader(_ title: String, width: CGFloat = popupWidth) -> NSView {
     let view = NSView(frame: NSRect(x: 0, y: 0, width: width, height: sepHeight))
     view.heightAnchor.constraint(equalToConstant: sepHeight).isActive = true
 
@@ -61,7 +61,7 @@ private func separatorView(_ title: String, width: CGFloat = popupWidth) -> NSVi
 }
 
 @discardableResult
-private func popupRow(_ view: NSView, title: String, value: String) -> (LabelField, ValueField, NSView) {
+private func addPopupValueRow(_ view: NSView, title: String, value: String) -> (LabelField, ValueField, NSView) {
     let w = view.frame.width
     let row = NSView(frame: NSRect(x: 0, y: 0, width: w, height: rowHeight))
 
@@ -81,7 +81,7 @@ private func popupRow(_ view: NSView, title: String, value: String) -> (LabelFie
 }
 
 @discardableResult
-private func popupWithColorRow(_ view: NSView, color: NSColor, title: String, value: String) -> (NSView, LabelField, ValueField) {
+private func addPopupColorValueRow(_ view: NSView, color: NSColor, title: String, value: String) -> (NSView, LabelField, ValueField) {
     let w = view.frame.width
     let row = NSView(frame: NSRect(x: 0, y: 0, width: w, height: rowHeight))
 
@@ -103,9 +103,9 @@ private func popupWithColorRow(_ view: NSView, color: NSColor, title: String, va
     return (dot, lbl, val)
 }
 
-// MARK: - Process list view (matching Stats' ProcessesView)
+// MARK: - Ranked process list view
 
-private final class ProcessesView: NSView {
+private final class RankedProcessListView: NSView {
     private let processCount: Int
     private var iconViews:   [NSImageView] = []
     private var nameLabels:  [LabelField]  = []
@@ -141,7 +141,7 @@ private final class ProcessesView: NSView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func setProcesses(_ procs: [TopProcess], format: (Double) -> String) {
+    func setRankedProcesses(_ procs: [RankedProcessMetric], format: (Double) -> String) {
         for i in 0..<processCount {
             if i < procs.count {
                 let name = procs[i].name
@@ -170,11 +170,11 @@ private final class ProcessesView: NSView {
         }
     }
 
-    func clear() {
-        setProcesses([]) { _ in "" }
+    func clearRankedProcesses() {
+        setRankedProcesses([]) { _ in "" }
     }
 
-    private func iconForProcess(_ process: TopProcess) -> NSImage? {
+    private func iconForProcess(_ process: RankedProcessMetric) -> NSImage? {
         if process.pid > 0 {
             if let cached = iconCacheByPID[process.pid] { return cached }
             if let icon = NSRunningApplication(processIdentifier: pid_t(process.pid))?.icon {
@@ -192,7 +192,7 @@ private final class ProcessesView: NSView {
     }
 }
 
-// MARK: - Memory formatting (matching Stats' Units)
+// MARK: - Popup value formatting
 
 private let memoryFormatter: ByteCountFormatter = {
     let fmt = ByteCountFormatter()
@@ -202,13 +202,13 @@ private let memoryFormatter: ByteCountFormatter = {
     return fmt
 }()
 
-private func fmtMemory(_ bytes: UInt64) -> String {
+private func formatMemoryBytes(_ bytes: UInt64) -> String {
     var s = memoryFormatter.string(fromByteCount: Int64(bytes))
     if let idx = s.lastIndex(of: ",") { s.replaceSubrange(idx...idx, with: ".") }
     return s
 }
 
-private func speedTuple(_ bytes: Double) -> (String, String) {
+private func formatNetworkSpeedValue(_ bytes: Double) -> (String, String) {
     let b = Int64(bytes)
     let kb = bytes / 1_000; let mb = bytes / 1_000_000; let gb = bytes / 1_000_000_000
     switch b {
@@ -220,7 +220,7 @@ private func speedTuple(_ bytes: Double) -> (String, String) {
     }
 }
 
-// MARK: - PopupPanel
+// MARK: - MetricPopupPanel
 
 private final class PopupChromeView: NSView {
     private let foreground: NSVisualEffectView
@@ -314,7 +314,7 @@ private final class PopupChromeView: NSView {
     }
 }
 
-final class PopupPanel: NSPanel {
+final class MetricPopupPanel: NSPanel {
     init(contentView content: NSView) {
         let chrome = PopupChromeView(content: content)
         super.init(
@@ -346,16 +346,16 @@ final class CPUPopupView: NSStackView {
     private let efficiencyCoreColor = NSColor.systemTeal.withAlphaComponent(0.38)
     private let unknownCoreColor = NSColor.controlAccentColor.withAlphaComponent(0.75)
 
-    private var circle: PieChartView!
-    private var lineChart: LineChartView!
-    private var columnChart: ColumnChartView!
+    private var circle: MetricPieChartView!
+    private var lineChart: MetricLineChartView!
+    private var columnChart: CoreUsageColumnChartView!
 
     private var systemField: ValueField!
     private var userField: ValueField!
     private var idleField: ValueField!
     private var uptimeField: ValueField!
 
-    private var processesView: ProcessesView!
+    private var processesView: RankedProcessListView!
     private let processCount = 8
 
     init() {
@@ -385,7 +385,7 @@ final class CPUPopupView: NSStackView {
         let usageX = (popupWidth - usageSize) / 2
         let usageView = NSView(frame: NSRect(x: usageX, y: (dashH - usageSize)/2, width: usageSize, height: usageSize))
 
-        circle = PieChartView(frame: NSRect(x: 0, y: 0, width: usageSize, height: usageSize),
+        circle = MetricPieChartView(frame: NSRect(x: 0, y: 0, width: usageSize, height: usageSize),
                               segments: [], drawValue: true)
         usageView.addSubview(circle)
         view.addSubview(usageView)
@@ -400,14 +400,14 @@ final class CPUPopupView: NSStackView {
         view.heightAnchor.constraint(equalToConstant: totalH).isActive = true
         view.orientation = .vertical; view.spacing = 0
 
-        view.addArrangedSubview(separatorView("Usage history"))
+        view.addArrangedSubview(makePopupSectionHeader("Usage history"))
 
         let lineBox = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: chartContentH))
         lineBox.heightAnchor.constraint(equalToConstant: chartContentH).isActive = true
         lineBox.wantsLayer = true
         lineBox.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
         lineBox.layer?.cornerRadius = 3
-        lineChart = LineChartView(frame: NSRect(x: 1, y: 0, width: popupWidth - 2, height: chartContentH), num: initialChartSamples, fixedMax: 1)
+        lineChart = MetricLineChartView(frame: NSRect(x: 1, y: 0, width: popupWidth - 2, height: chartContentH), num: initialChartSamples, fixedMax: 1)
         lineBox.addSubview(lineChart)
         view.addArrangedSubview(lineBox)
 
@@ -416,7 +416,7 @@ final class CPUPopupView: NSStackView {
         barBox.wantsLayer = true
         barBox.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
         barBox.layer?.cornerRadius = 3
-        columnChart = ColumnChartView(
+        columnChart = CoreUsageColumnChartView(
             frame: NSRect(x: spacing, y: spacing, width: popupWidth - spacing*2, height: barContentH - spacing*2),
             num: ProcessInfo.processInfo.processorCount
         )
@@ -432,7 +432,7 @@ final class CPUPopupView: NSStackView {
         let view = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: h))
         view.heightAnchor.constraint(equalToConstant: h).isActive = true
 
-        let sep = separatorView("Details")
+        let sep = makePopupSectionHeader("Details")
         sep.frame = NSRect(x: 0, y: h - sepHeight, width: popupWidth, height: sepHeight)
         view.addSubview(sep)
 
@@ -440,10 +440,10 @@ final class CPUPopupView: NSStackView {
         container.orientation = .vertical; container.spacing = 0
         view.addSubview(container)
 
-        systemField = popupWithColorRow(container, color: systemColor, title: "System:", value: "").2
-        userField   = popupWithColorRow(container, color: userColor,   title: "User:",   value: "").2
-        idleField   = popupWithColorRow(container, color: idleColor.withAlphaComponent(0.5), title: "Idle:", value: "").2
-        uptimeField = popupRow(container, title: "Uptime:", value: "").1
+        systemField = addPopupColorValueRow(container, color: systemColor, title: "System:", value: "").2
+        userField   = addPopupColorValueRow(container, color: userColor,   title: "User:",   value: "").2
+        idleField   = addPopupColorValueRow(container, color: idleColor.withAlphaComponent(0.5), title: "Idle:", value: "").2
+        uptimeField = addPopupValueRow(container, title: "Uptime:", value: "").1
         return view
     }
 
@@ -453,11 +453,11 @@ final class CPUPopupView: NSStackView {
         let view = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: totalH))
         view.heightAnchor.constraint(equalToConstant: totalH).isActive = true
 
-        let sep = separatorView("Top processes")
+        let sep = makePopupSectionHeader("Top processes")
         sep.frame = NSRect(x: 0, y: procViewH, width: popupWidth, height: sepHeight)
         view.addSubview(sep)
 
-        processesView = ProcessesView(
+        processesView = RankedProcessListView(
             frame: NSRect(x: 0, y: 0, width: popupWidth, height: procViewH),
             count: processCount,
             valueHeader: "CPU"
@@ -466,28 +466,28 @@ final class CPUPopupView: NSStackView {
         return view
     }
 
-    func update(_ d: CPUDetail, processes: [TopProcess], syncHistory _: Bool = false) {
-        systemField.stringValue = "\(Int((d.system * 100).rounded()))%"
-        userField.stringValue   = "\(Int((d.user   * 100).rounded()))%"
-        idleField.stringValue   = "\(Int((d.idle   * 100).rounded()))%"
-        uptimeField.stringValue = d.uptime
+    func updateCPUUsage(_ detail: CPUUsageDetail, processes: [RankedProcessMetric], syncHistory _: Bool = false) {
+        systemField.stringValue = "\(Int((detail.system * 100).rounded()))%"
+        userField.stringValue   = "\(Int((detail.user   * 100).rounded()))%"
+        idleField.stringValue   = "\(Int((detail.idle   * 100).rounded()))%"
+        uptimeField.stringValue = detail.uptime
 
-        circle.setText(nil)
-        circle.setSegments([
-            ColorValue(d.system, color: systemColor),
-            ColorValue(d.user,   color: userColor)
+        circle.setCenterText(nil)
+        circle.setSegmentValues([
+            ChartSegmentValue(detail.system, color: systemColor),
+            ChartSegmentValue(detail.user,   color: userColor)
         ])
-        circle.setNonActiveSegmentColor(idleColor)
-        circle.setValue(d.total)
+        circle.setInactiveSegmentColor(idleColor)
+        circle.setFraction(detail.total)
 
-        lineChart.reinit(max(initialChartSamples, d.historyCapacity))
-        lineChart.setValues(d.history)
+        lineChart.resetMetricHistory(sampleCount: max(initialChartSamples, detail.historyCapacity))
+        lineChart.setMetricHistory(detail.history)
 
-        if !d.usagePerCore.isEmpty {
-            let vals = d.usagePerCore.enumerated().map { idx, value in
+        if !detail.usagePerCore.isEmpty {
+            let vals = detail.usagePerCore.enumerated().map { idx, value in
                 let color: NSColor
-                if d.coreKinds.indices.contains(idx) {
-                    switch d.coreKinds[idx] {
+                if detail.coreKinds.indices.contains(idx) {
+                    switch detail.coreKinds[idx] {
                     case .efficiency: color = efficiencyCoreColor
                     case .performance: color = performanceCoreColor
                     case .unknown: color = unknownCoreColor
@@ -495,27 +495,27 @@ final class CPUPopupView: NSStackView {
                 } else {
                     color = unknownCoreColor
                 }
-                return ColorValue(value, color: color)
+                return ChartSegmentValue(value, color: color)
             }
-            columnChart.setValues(vals)
+            columnChart.setCoreUsageValues(vals)
         }
 
-        processesView.setProcesses(processes) { v in
+        processesView.setRankedProcesses(processes) { v in
             String(format: v < 10 ? "%.1f%%" : "%.0f%%", v)
         }
     }
 
-    func clearData() {
+    func clearCPUUsageDisplay() {
         systemField.stringValue = "--"
         userField.stringValue = "--"
         idleField.stringValue = "--"
         uptimeField.stringValue = "--"
-        circle.setText("--")
-        circle.setSegments([])
-        circle.setValue(0)
-        lineChart.setValues([])
-        columnChart.setValues([])
-        processesView.clear()
+        circle.setCenterText("--")
+        circle.setSegmentValues([])
+        circle.setFraction(0)
+        lineChart.setMetricHistory([])
+        columnChart.setCoreUsageValues([])
+        processesView.clearRankedProcesses()
     }
 }
 
@@ -529,9 +529,9 @@ final class RAMPopupView: NSStackView {
     private let compressedColor = NSColor.systemPink
     private let freeColor       = NSColor.lightGray
 
-    private var circle: PieChartView!
-    private var level: PieChartView!
-    private var lineChart: LineChartView!
+    private var circle: MetricPieChartView!
+    private var level: MetricPieChartView!
+    private var lineChart: MetricLineChartView!
 
     private var usedField: ValueField!
     private var appField: ValueField!
@@ -540,7 +540,7 @@ final class RAMPopupView: NSStackView {
     private var freeField: ValueField!
     private var swapField: ValueField!
 
-    private var processesView: ProcessesView!
+    private var processesView: RankedProcessListView!
     private let processCount = 8
 
     init() {
@@ -569,16 +569,16 @@ final class RAMPopupView: NSStackView {
         let container = NSView(frame: NSRect(x: 0, y: 10, width: popupWidth, height: dashH - 20))
         let circleSize = dashH - 20
         let circleX = (popupWidth - circleSize) / 2
-        circle = PieChartView(frame: NSRect(x: circleX, y: 0, width: circleSize, height: circleSize),
+        circle = MetricPieChartView(frame: NSRect(x: circleX, y: 0, width: circleSize, height: circleSize),
                               segments: [], drawValue: true)
         container.addSubview(circle)
 
         let sideWidth = (popupWidth - circleSize - margins*2) / 2
-        level = PieChartView(frame: NSRect(x: (sideWidth - 60)/2, y: 10, width: 60, height: 50),
+        level = MetricPieChartView(frame: NSRect(x: (sideWidth - 60)/2, y: 10, width: 60, height: 50),
                              segments: [
-                                ColorValue(1/3, color: .systemGreen),
-                                ColorValue(1/3, color: .systemYellow),
-                                ColorValue(1/3, color: .systemRed)
+                                ChartSegmentValue(1/3, color: .systemGreen),
+                                ChartSegmentValue(1/3, color: .systemYellow),
+                                ChartSegmentValue(1/3, color: .systemRed)
                              ],
                              drawValue: true, drawNeedle: true, openCircle: true)
 
@@ -593,7 +593,7 @@ final class RAMPopupView: NSStackView {
         let view = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: totalH))
         view.heightAnchor.constraint(equalToConstant: totalH).isActive = true
 
-        let sep = separatorView("Usage history")
+        let sep = makePopupSectionHeader("Usage history")
         sep.frame = NSRect(x: 0, y: chartH, width: popupWidth, height: sepHeight)
         view.addSubview(sep)
 
@@ -601,7 +601,7 @@ final class RAMPopupView: NSStackView {
         container.wantsLayer = true
         container.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
         container.layer?.cornerRadius = 3
-        lineChart = LineChartView(frame: NSRect(x: 1, y: 0, width: popupWidth - 2, height: chartH), num: initialChartSamples, fixedMax: 1)
+        lineChart = MetricLineChartView(frame: NSRect(x: 1, y: 0, width: popupWidth - 2, height: chartH), num: initialChartSamples, fixedMax: 1)
         container.addSubview(lineChart)
         view.addSubview(container)
         return view
@@ -612,7 +612,7 @@ final class RAMPopupView: NSStackView {
         let view = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: h))
         view.heightAnchor.constraint(equalToConstant: h).isActive = true
 
-        let sep = separatorView("Details")
+        let sep = makePopupSectionHeader("Details")
         sep.frame = NSRect(x: 0, y: h - sepHeight, width: popupWidth, height: sepHeight)
         view.addSubview(sep)
 
@@ -620,12 +620,12 @@ final class RAMPopupView: NSStackView {
         container.orientation = .vertical; container.spacing = 0
         view.addSubview(container)
 
-        usedField = popupRow(container,    title: "Used:",       value: "").1
-        appField  = popupWithColorRow(container, color: appColor,        title: "App:",        value: "").2
-        wiredField = popupWithColorRow(container, color: wiredColor,     title: "Wired:",      value: "").2
-        compField  = popupWithColorRow(container, color: compressedColor, title: "Compressed:", value: "").2
-        freeField  = popupWithColorRow(container, color: freeColor.withAlphaComponent(0.5), title: "Free:", value: "").2
-        swapField  = popupRow(container,   title: "Swap:",       value: "").1
+        usedField = addPopupValueRow(container,    title: "Used:",       value: "").1
+        appField  = addPopupColorValueRow(container, color: appColor,        title: "App:",        value: "").2
+        wiredField = addPopupColorValueRow(container, color: wiredColor,     title: "Wired:",      value: "").2
+        compField  = addPopupColorValueRow(container, color: compressedColor, title: "Compressed:", value: "").2
+        freeField  = addPopupColorValueRow(container, color: freeColor.withAlphaComponent(0.5), title: "Free:", value: "").2
+        swapField  = addPopupValueRow(container,   title: "Swap:",       value: "").1
         return view
     }
 
@@ -635,11 +635,11 @@ final class RAMPopupView: NSStackView {
         let view = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: totalH))
         view.heightAnchor.constraint(equalToConstant: totalH).isActive = true
 
-        let sep = separatorView("Top processes")
+        let sep = makePopupSectionHeader("Top processes")
         sep.frame = NSRect(x: 0, y: procViewH, width: popupWidth, height: sepHeight)
         view.addSubview(sep)
 
-        processesView = ProcessesView(
+        processesView = RankedProcessListView(
             frame: NSRect(x: 0, y: 0, width: popupWidth, height: procViewH),
             count: processCount,
             valueHeader: "Memory"
@@ -648,45 +648,45 @@ final class RAMPopupView: NSStackView {
         return view
     }
 
-    func update(_ d: RAMDetail, processes: [TopProcess], syncHistory _: Bool = false) {
-        let used = d.appBytes + d.wiredBytes + d.compressedBytes
-        usedField.stringValue  = fmtMemory(used)
-        appField.stringValue   = fmtMemory(d.appBytes)
-        wiredField.stringValue = fmtMemory(d.wiredBytes)
-        compField.stringValue  = fmtMemory(d.compressedBytes)
-        freeField.stringValue  = fmtMemory(d.freeBytes)
-        swapField.stringValue  = fmtMemory(d.swapBytes)
+    func updateRAMUsage(_ detail: RAMUsageDetail, processes: [RankedProcessMetric], syncHistory _: Bool = false) {
+        let used = detail.appBytes + detail.wiredBytes + detail.compressedBytes
+        usedField.stringValue  = formatMemoryBytes(used)
+        appField.stringValue   = formatMemoryBytes(detail.appBytes)
+        wiredField.stringValue = formatMemoryBytes(detail.wiredBytes)
+        compField.stringValue  = formatMemoryBytes(detail.compressedBytes)
+        freeField.stringValue  = formatMemoryBytes(detail.freeBytes)
+        swapField.stringValue  = formatMemoryBytes(detail.swapBytes)
 
-        circle.setText(nil)
-        circle.setSegments([
-            ColorValue(d.totalBytes > 0 ? Double(d.appBytes)        / Double(d.totalBytes) : 0, color: appColor),
-            ColorValue(d.totalBytes > 0 ? Double(d.wiredBytes)      / Double(d.totalBytes) : 0, color: wiredColor),
-            ColorValue(d.totalBytes > 0 ? Double(d.compressedBytes) / Double(d.totalBytes) : 0, color: compressedColor)
+        circle.setCenterText(nil)
+        circle.setSegmentValues([
+            ChartSegmentValue(detail.totalBytes > 0 ? Double(detail.appBytes)        / Double(detail.totalBytes) : 0, color: appColor),
+            ChartSegmentValue(detail.totalBytes > 0 ? Double(detail.wiredBytes)      / Double(detail.totalBytes) : 0, color: wiredColor),
+            ChartSegmentValue(detail.totalBytes > 0 ? Double(detail.compressedBytes) / Double(detail.totalBytes) : 0, color: compressedColor)
         ])
-        circle.setNonActiveSegmentColor(freeColor)
-        circle.setValue(d.total)
+        circle.setInactiveSegmentColor(freeColor)
+        circle.setFraction(detail.total)
 
-        level.setActiveSegment(d.pressureLevel)
+        level.setActiveSegmentIndex(detail.pressureLevel)
 
-        lineChart.reinit(max(initialChartSamples, d.historyCapacity))
-        lineChart.setValues(d.history)
+        lineChart.resetMetricHistory(sampleCount: max(initialChartSamples, detail.historyCapacity))
+        lineChart.setMetricHistory(detail.history)
 
-        processesView.setProcesses(processes) { v in fmtMemory(UInt64(v)) }
+        processesView.setRankedProcesses(processes) { v in formatMemoryBytes(UInt64(v)) }
     }
 
-    func clearData() {
+    func clearRAMUsageDisplay() {
         usedField.stringValue = "--"
         appField.stringValue = "--"
         wiredField.stringValue = "--"
         compField.stringValue = "--"
         freeField.stringValue = "--"
         swapField.stringValue = "--"
-        circle.setText("--")
-        circle.setSegments([])
-        circle.setValue(0)
-        level.setActiveSegment(0)
-        lineChart.setValues([])
-        processesView.clear()
+        circle.setCenterText("--")
+        circle.setSegmentValues([])
+        circle.setFraction(0)
+        level.setActiveSegmentIndex(0)
+        lineChart.setMetricHistory([])
+        processesView.clearRankedProcesses()
     }
 }
 
@@ -698,12 +698,12 @@ final class GPUPopupView: NSStackView {
     private var modelLabel: NSTextField!
     private var circleRow: NSStackView!
     private var chartRow: NSStackView!
-    private var gpuCircle: PieChartView!
-    private var renderCircle: PieChartView!
-    private var tilerCircle: PieChartView!
-    private var gpuChart: LineChartView!
-    private var renderChart: LineChartView!
-    private var tilerChart: LineChartView!
+    private var gpuCircle: MetricPieChartView!
+    private var renderCircle: MetricPieChartView!
+    private var tilerCircle: MetricPieChartView!
+    private var gpuChart: MetricLineChartView!
+    private var renderChart: MetricLineChartView!
+    private var tilerChart: MetricLineChartView!
 
     private let circleSize: CGFloat = 50
     private let chartSize:  CGFloat = 60
@@ -799,7 +799,7 @@ final class GPUPopupView: NSStackView {
     }
 
     private func addCircle(id: String) {
-        let c = PieChartView(frame: NSRect(x: 0, y: 0, width: circleSize, height: circleSize), openCircle: true)
+        let c = MetricPieChartView(frame: NSRect(x: 0, y: 0, width: circleSize, height: circleSize), openCircle: true)
         c.id = id
         circleRow.addArrangedSubview(c)
         switch id {
@@ -811,7 +811,7 @@ final class GPUPopupView: NSStackView {
     }
 
     private func addChart(id: String) {
-        let c = LineChartView(frame: NSRect(x: 0, y: 0, width: 100, height: chartSize), num: initialChartSamples, fixedMax: 1)
+        let c = MetricLineChartView(frame: NSRect(x: 0, y: 0, width: 100, height: chartSize), num: initialChartSamples, fixedMax: 1)
         c.id = id
         c.wantsLayer = true
         c.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
@@ -825,36 +825,36 @@ final class GPUPopupView: NSStackView {
         }
     }
 
-    func update(_ d: GPUDetail, syncHistory _: Bool = false) {
-        modelLabel.stringValue = d.model
+    func updateGPUUsage(_ detail: GPUUsageDetail, syncHistory _: Bool = false) {
+        modelLabel.stringValue = detail.model
 
-        gpuCircle.setValue(d.total)
-        gpuCircle.setText("\(Int((d.total * 100).rounded()))%")
-        gpuChart.reinit(max(initialChartSamples, d.historyCapacity))
-        gpuChart.setValues(d.history)
+        gpuCircle.setFraction(detail.total)
+        gpuCircle.setCenterText("\(Int((detail.total * 100).rounded()))%")
+        gpuChart.resetMetricHistory(sampleCount: max(initialChartSamples, detail.historyCapacity))
+        gpuChart.setMetricHistory(detail.history)
 
-        renderCircle.setValue(d.render)
-        renderCircle.setText("\(Int((d.render * 100).rounded()))%")
-        renderChart.reinit(max(initialChartSamples, d.historyCapacity))
-        renderChart.setValues(d.renderHistory)
+        renderCircle.setFraction(detail.render)
+        renderCircle.setCenterText("\(Int((detail.render * 100).rounded()))%")
+        renderChart.resetMetricHistory(sampleCount: max(initialChartSamples, detail.historyCapacity))
+        renderChart.setMetricHistory(detail.renderHistory)
 
-        tilerCircle.setValue(d.tiler)
-        tilerCircle.setText("\(Int((d.tiler * 100).rounded()))%")
-        tilerChart.reinit(max(initialChartSamples, d.historyCapacity))
-        tilerChart.setValues(d.tilerHistory)
+        tilerCircle.setFraction(detail.tiler)
+        tilerCircle.setCenterText("\(Int((detail.tiler * 100).rounded()))%")
+        tilerChart.resetMetricHistory(sampleCount: max(initialChartSamples, detail.historyCapacity))
+        tilerChart.setMetricHistory(detail.tilerHistory)
     }
 
-    func clearData() {
+    func clearGPUUsageDisplay() {
         modelLabel.stringValue = "--"
-        gpuCircle.setValue(0)
-        gpuCircle.setText("--")
-        gpuChart.setValues([])
-        renderCircle.setValue(0)
-        renderCircle.setText("--")
-        renderChart.setValues([])
-        tilerCircle.setValue(0)
-        tilerCircle.setText("--")
-        tilerChart.setValues([])
+        gpuCircle.setFraction(0)
+        gpuCircle.setCenterText("--")
+        gpuChart.setMetricHistory([])
+        renderCircle.setFraction(0)
+        renderCircle.setCenterText("--")
+        renderChart.setMetricHistory([])
+        tilerCircle.setFraction(0)
+        tilerCircle.setCenterText("--")
+        tilerChart.setMetricHistory([])
     }
 }
 
@@ -879,8 +879,8 @@ final class PowerPopupView: NSStackView {
     private var mediaValue: ValueField!
     private var displayValue: ValueField!
     private var otherValue: ValueField!
-    private var chart: StackedPowerChartView!
-    private var flowView: PowerFlowView!
+    private var chart: PowerComponentStackedChartView!
+    private var flowView: BatteryPowerFlowView!
 
     init() {
         super.init(frame: NSRect(x: 0, y: 0, width: popupWidth, height: 0))
@@ -889,7 +889,7 @@ final class PowerPopupView: NSStackView {
         wantsLayer = true
         layer?.cornerRadius = 2
 
-        addArrangedSubview(separatorView("Power"))
+        addArrangedSubview(makePopupSectionHeader("Power"))
         addArrangedSubview(initFlow())
         initRows()
         addArrangedSubview(initChart())
@@ -910,15 +910,15 @@ final class PowerPopupView: NSStackView {
     }
 
     private func initRows() {
-        (_, systemValue, _) = popupRow(self, title: "System", value: "--W")
-        (_, modeledValue, _) = popupRow(self, title: "Modeled", value: "--W")
-        (_, _, cpuValue) = popupWithColorRow(self, color: cpuColor, title: "CPU", value: "--W")
-        (_, _, gpuValue) = popupWithColorRow(self, color: gpuColor, title: "GPU", value: "--W")
-        (_, _, aneValue) = popupWithColorRow(self, color: aneColor, title: "ANE", value: "--W")
-        (_, _, memoryValue) = popupWithColorRow(self, color: memoryColor, title: "Memory", value: "--W")
-        (_, _, mediaValue) = popupWithColorRow(self, color: mediaColor, title: "Media", value: "--W")
-        (_, _, displayValue) = popupWithColorRow(self, color: displayColor, title: "Display", value: "--W")
-        (_, _, otherValue) = popupWithColorRow(self, color: otherColor, title: "Other SoC", value: "--W")
+        (_, systemValue, _) = addPopupValueRow(self, title: "System", value: "--W")
+        (_, modeledValue, _) = addPopupValueRow(self, title: "Modeled", value: "--W")
+        (_, _, cpuValue) = addPopupColorValueRow(self, color: cpuColor, title: "CPU", value: "--W")
+        (_, _, gpuValue) = addPopupColorValueRow(self, color: gpuColor, title: "GPU", value: "--W")
+        (_, _, aneValue) = addPopupColorValueRow(self, color: aneColor, title: "ANE", value: "--W")
+        (_, _, memoryValue) = addPopupColorValueRow(self, color: memoryColor, title: "Memory", value: "--W")
+        (_, _, mediaValue) = addPopupColorValueRow(self, color: mediaColor, title: "Media", value: "--W")
+        (_, _, displayValue) = addPopupColorValueRow(self, color: displayColor, title: "Display", value: "--W")
+        (_, _, otherValue) = addPopupColorValueRow(self, color: otherColor, title: "Other SoC", value: "--W")
     }
 
     private func initFlow() -> NSView {
@@ -926,7 +926,7 @@ final class PowerPopupView: NSStackView {
         let view = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: flowH))
         view.heightAnchor.constraint(equalToConstant: flowH).isActive = true
 
-        flowView = PowerFlowView(frame: NSRect(x: margins, y: 0, width: popupWidth - margins*2, height: flowH))
+        flowView = BatteryPowerFlowView(frame: NSRect(x: margins, y: 0, width: popupWidth - margins*2, height: flowH))
         flowView.wantsLayer = true
         flowView.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
         flowView.layer?.cornerRadius = 3
@@ -939,7 +939,7 @@ final class PowerPopupView: NSStackView {
         let view = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: chartH))
         view.heightAnchor.constraint(equalToConstant: chartH).isActive = true
 
-        chart = StackedPowerChartView(
+        chart = PowerComponentStackedChartView(
             frame: NSRect(x: margins, y: margins, width: popupWidth - margins*2, height: chartH - margins*2),
             cpuColor: cpuColor,
             gpuColor: gpuColor,
@@ -957,33 +957,33 @@ final class PowerPopupView: NSStackView {
         return view
     }
 
-    func update(_ d: PowerDetail, syncHistory _: Bool = false) {
-        systemValue.stringValue = fmtPower(d.system)
-        modeledValue.stringValue = fmtPower(d.modeled)
-        cpuValue.stringValue = fmtPower(d.cpu)
-        gpuValue.stringValue = fmtPower(d.gpu)
-        aneValue.stringValue = fmtPower(d.ane)
-        memoryValue.stringValue = fmtPower(d.memory)
-        mediaValue.stringValue = fmtPower(d.media)
-        displayValue.stringValue = fmtPower(d.display)
-        otherValue.stringValue = fmtPower(d.other)
-        updateCharging(d.charging)
+    func updatePowerUsage(_ detail: PowerUsageDetail, syncHistory _: Bool = false) {
+        systemValue.stringValue = fmtPower(detail.system)
+        modeledValue.stringValue = fmtPower(detail.modeled)
+        cpuValue.stringValue = fmtPower(detail.cpu)
+        gpuValue.stringValue = fmtPower(detail.gpu)
+        aneValue.stringValue = fmtPower(detail.ane)
+        memoryValue.stringValue = fmtPower(detail.memory)
+        mediaValue.stringValue = fmtPower(detail.media)
+        displayValue.stringValue = fmtPower(detail.display)
+        otherValue.stringValue = fmtPower(detail.other)
+        updateChargingFlow(detail.charging)
 
-        guard d.cpu != nil,
-              d.gpu != nil,
-              d.ane != nil,
-              d.memory != nil,
-              d.media != nil,
-              d.display != nil,
-              d.other != nil else {
-            chart.setValues([])
+        guard detail.cpu != nil,
+              detail.gpu != nil,
+              detail.ane != nil,
+              detail.memory != nil,
+              detail.media != nil,
+              detail.display != nil,
+              detail.other != nil else {
+            chart.setPowerHistory([])
             return
         }
 
-        chart.setValues(d.history)
+        chart.setPowerHistory(detail.history)
     }
 
-    func clearData() {
+    func clearPowerUsageDisplay() {
         systemValue.stringValue = "--W"
         modeledValue.stringValue = "--W"
         cpuValue.stringValue = "--W"
@@ -993,12 +993,12 @@ final class PowerPopupView: NSStackView {
         mediaValue.stringValue = "--W"
         displayValue.stringValue = "--W"
         otherValue.stringValue = "--W"
-        flowView.showPlaceholder()
-        chart.setValues([])
+        flowView.showPowerFlowPlaceholder()
+        chart.setPowerHistory([])
     }
 
-    private func updateCharging(_ detail: ChargingDetail?) {
-        flowView.update(detail)
+    private func updateChargingFlow(_ detail: BatteryChargingDetail?) {
+        flowView.setBatteryChargingDetail(detail)
     }
 
     private func fmtPower(_ watts: Double?) -> String {
@@ -1012,11 +1012,11 @@ final class PowerPopupView: NSStackView {
     }
 }
 
-// MARK: - Net Popup
-// Matches Stats Net popup: dashboard (large up/down values) + usage history +
+// MARK: - Network popup
+// Dashboard for upload/download values, usage history, interface details, and
 // details + interface + address
 
-final class NetPopupView: NSStackView {
+final class NetworkPopupView: NSStackView {
 
     private let uploadColor   = NSColor.systemRed
     private let downloadColor = NSColor.systemBlue
@@ -1031,7 +1031,7 @@ final class NetPopupView: NSStackView {
     private var downloadView: NSView!
     private var downloadContainerView: NSView!
 
-    private var usageChart: NetworkChartView!
+    private var usageChart: NetworkThroughputChartView!
 
     private var totalUpField:   ValueField!
     private var totalDownField: ValueField!
@@ -1045,7 +1045,7 @@ final class NetPopupView: NSStackView {
     private var localIPField:  ValueField!
     private var publicIPField: ValueField!
 
-    private var netProcessesView: ProcessesView!
+    private var netProcessesView: RankedProcessListView!
     private let processCount = 8
 
     init() {
@@ -1146,7 +1146,7 @@ final class NetPopupView: NSStackView {
         let view = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: totalH))
         view.heightAnchor.constraint(equalToConstant: totalH).isActive = true
 
-        let sep = separatorView("Usage history")
+        let sep = makePopupSectionHeader("Usage history")
         sep.frame = NSRect(x: 0, y: chartH, width: popupWidth, height: sepHeight)
         view.addSubview(sep)
 
@@ -1154,7 +1154,7 @@ final class NetPopupView: NSStackView {
         container.wantsLayer = true
         container.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
         container.layer?.cornerRadius = 3
-        usageChart = NetworkChartView(
+        usageChart = NetworkThroughputChartView(
             frame: NSRect(x: 0, y: 1, width: popupWidth, height: chartH - 2),
             num: initialChartSamples,
             outColor: uploadColor, inColor: downloadColor
@@ -1173,15 +1173,15 @@ final class NetPopupView: NSStackView {
 
         let sepRow = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: sepHeight))
         sepRow.heightAnchor.constraint(equalToConstant: sepHeight).isActive = true
-        sepRow.addSubview(separatorView("Details", width: popupWidth))
+        sepRow.addSubview(makePopupSectionHeader("Details", width: popupWidth))
         view.addArrangedSubview(sepRow)
 
-        let (_, _, tu) = popupWithColorRow(view, color: uploadColor,   title: "Total upload:",   value: "0")
-        let (_, _, td) = popupWithColorRow(view, color: downloadColor, title: "Total download:", value: "0")
+        let (_, _, tu) = addPopupColorValueRow(view, color: uploadColor,   title: "Total upload:",   value: "0")
+        let (_, _, td) = addPopupColorValueRow(view, color: downloadColor, title: "Total download:", value: "0")
         totalUpField   = tu
         totalDownField = td
 
-        statusField = popupRow(view, title: "Status:", value: "Unknown").1
+        statusField = addPopupValueRow(view, title: "Status:", value: "Unknown").1
         return view
     }
 
@@ -1194,11 +1194,11 @@ final class NetPopupView: NSStackView {
 
         let sepRow = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: sepHeight))
         sepRow.heightAnchor.constraint(equalToConstant: sepHeight).isActive = true
-        sepRow.addSubview(separatorView("Interface", width: popupWidth))
+        sepRow.addSubview(makePopupSectionHeader("Interface", width: popupWidth))
         view.addArrangedSubview(sepRow)
 
-        interfaceField   = popupRow(view, title: "Interface:",        value: "Unknown").1
-        ifaceStatusField = popupRow(view, title: "Status:",           value: "Unknown").1
+        interfaceField   = addPopupValueRow(view, title: "Interface:",        value: "Unknown").1
+        ifaceStatusField = addPopupValueRow(view, title: "Status:",           value: "Unknown").1
         return view
     }
 
@@ -1211,11 +1211,11 @@ final class NetPopupView: NSStackView {
 
         let sepRow = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: sepHeight))
         sepRow.heightAnchor.constraint(equalToConstant: sepHeight).isActive = true
-        sepRow.addSubview(separatorView("Address", width: popupWidth))
+        sepRow.addSubview(makePopupSectionHeader("Address", width: popupWidth))
         view.addArrangedSubview(sepRow)
 
-        localIPField  = popupRow(view, title: "Local IP:",  value: "Unknown").1
-        publicIPField = popupRow(view, title: "Public IP:", value: "Unknown").1
+        localIPField  = addPopupValueRow(view, title: "Local IP:",  value: "Unknown").1
+        publicIPField = addPopupValueRow(view, title: "Public IP:", value: "Unknown").1
         return view
     }
 
@@ -1225,11 +1225,11 @@ final class NetPopupView: NSStackView {
         let view = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: totalH))
         view.heightAnchor.constraint(equalToConstant: totalH).isActive = true
 
-        let sep = separatorView("Top processes")
+        let sep = makePopupSectionHeader("Top processes")
         sep.frame = NSRect(x: 0, y: procViewH, width: popupWidth, height: sepHeight)
         view.addSubview(sep)
 
-        netProcessesView = ProcessesView(
+        netProcessesView = RankedProcessListView(
             frame: NSRect(x: 0, y: 0, width: popupWidth, height: procViewH),
             count: processCount,
             valueHeader: "Network"
@@ -1238,16 +1238,16 @@ final class NetPopupView: NSStackView {
         return view
     }
 
-    func updateProcesses(_ procs: [TopProcess]) {
-        netProcessesView.setProcesses(procs) { v in
-            let (val, unit) = speedTuple(v)
+    func updateNetworkProcesses(_ metrics: [RankedProcessMetric]) {
+        netProcessesView.setRankedProcesses(metrics) { value in
+            let (val, unit) = formatNetworkSpeedValue(value)
             return "\(val) \(unit)"
         }
     }
 
     private func setSpeedFields(upload: Double, download: Double) {
-        let up   = speedTuple(upload)
-        let down = speedTuple(download)
+        let up   = formatNetworkSpeedValue(upload)
+        let down = formatNetworkSpeedValue(download)
 
         let upValueW   = up.0.widthOfString(usingFont: .systemFont(ofSize: 26, weight: .light)) + 5
         let upUnitW    = up.1.widthOfString(usingFont: .systemFont(ofSize: 13, weight: .light)) + 5
@@ -1278,25 +1278,25 @@ final class NetPopupView: NSStackView {
         }
     }
 
-    func update(_ d: NetDetail, syncHistory _: Bool = false) {
-        setSpeedFields(upload: d.upload, download: d.download)
-        totalUpField.stringValue   = fmtMemory(d.totalUp)
-        totalDownField.stringValue = fmtMemory(d.totalDown)
-        statusField.stringValue    = d.isUp ? "UP" : "DOWN"
+    func updateNetworkUsage(_ detail: NetworkUsageDetail, syncHistory _: Bool = false) {
+        setSpeedFields(upload: detail.upload, download: detail.download)
+        totalUpField.stringValue   = formatMemoryBytes(detail.totalUp)
+        totalDownField.stringValue = formatMemoryBytes(detail.totalDown)
+        statusField.stringValue    = detail.isUp ? "UP" : "DOWN"
 
-        let ifaceName = d.interfaceName.isEmpty ? "Unknown" : d.interfaceName
-        let dispName  = d.displayName.isEmpty   ? ifaceName : d.displayName
+        let ifaceName = detail.interfaceName.isEmpty ? "Unknown" : detail.interfaceName
+        let dispName  = detail.displayName.isEmpty   ? ifaceName : detail.displayName
         interfaceField.stringValue   = "\(dispName) (\(ifaceName))"
-        ifaceStatusField.stringValue = d.isUp ? "Active" : "Inactive"
+        ifaceStatusField.stringValue = detail.isUp ? "Active" : "Inactive"
 
-        localIPField.stringValue  = d.localIP.isEmpty    ? "Unknown" : d.localIP
-        publicIPField.stringValue = d.publicIP ?? "Fetching…"
+        localIPField.stringValue  = detail.localIP.isEmpty    ? "Unknown" : detail.localIP
+        publicIPField.stringValue = detail.publicIP ?? "Fetching…"
 
-        usageChart.reinit(max(initialChartSamples, d.historyCapacity))
-        usageChart.setValues(d.history)
+        usageChart.resetThroughputHistory(sampleCount: max(initialChartSamples, detail.historyCapacity))
+        usageChart.setThroughputHistory(detail.history)
     }
 
-    func clearData() {
+    func clearNetworkUsageDisplay() {
         setPlaceholderSpeedFields()
         totalUpField.stringValue = "--"
         totalDownField.stringValue = "--"
@@ -1305,8 +1305,8 @@ final class NetPopupView: NSStackView {
         ifaceStatusField.stringValue = "--"
         localIPField.stringValue = "--"
         publicIPField.stringValue = "--"
-        usageChart.setValues([])
-        netProcessesView.clear()
+        usageChart.setThroughputHistory([])
+        netProcessesView.clearRankedProcesses()
     }
 
     private func setPlaceholderSpeedFields() {
