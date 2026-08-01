@@ -23,8 +23,10 @@ public final class GPUUsageReader {
     private var render: Double = 0
     private var tiler: Double = 0
     private var acceleratorService: io_object_t = 0
+    private let phaseRecorder: CoreReadPhaseRecorder?
 
-    public init(updateInterval: Double = 3) {
+    public init(updateInterval: Double = 3, phaseRecorder: CoreReadPhaseRecorder? = nil) {
+        self.phaseRecorder = phaseRecorder
         let capacity = metricGraphSampleCapacity(updateInterval: updateInterval)
         history = ScalarHistory(capacity: capacity)
         renderHistory = ScalarHistory(capacity: capacity)
@@ -66,11 +68,18 @@ public final class GPUUsageReader {
         }
 
         var iterator: io_iterator_t = 0
-        guard IOServiceGetMatchingServices(
+        let servicesResult = phaseRecorder?.measure("ioaccelerator.service_lookup") {
+            IOServiceGetMatchingServices(
+                kIOMainPortDefault,
+                IOServiceMatching("IOAccelerator"),
+                &iterator
+            )
+        } ?? IOServiceGetMatchingServices(
             kIOMainPortDefault,
             IOServiceMatching("IOAccelerator"),
             &iterator
-        ) == KERN_SUCCESS else { return detail() }
+        )
+        guard servicesResult == KERN_SUCCESS else { return detail() }
         defer { IOObjectRelease(iterator) }
 
         while true {
@@ -90,6 +99,12 @@ public final class GPUUsageReader {
     }
 
     private func readGPUPerformanceStatistics(service: io_object_t) -> Bool {
+        measureCoreReadPhase(phaseRecorder, name: "ioaccelerator.properties") {
+            readGPUPerformanceStatisticsUnmeasured(service: service)
+        }
+    }
+
+    private func readGPUPerformanceStatisticsUnmeasured(service: io_object_t) -> Bool {
         var props: Unmanaged<CFMutableDictionary>?
         guard IORegistryEntryCreateCFProperties(service, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS,
               let dict = props?.takeRetainedValue() as? [String: Any],
@@ -103,21 +118,38 @@ public final class GPUUsageReader {
         render = (perf["Renderer Utilization %"] as? Double ?? 0) / 100.0
         tiler = (perf["Tiler Utilization %"]   as? Double ?? 0) / 100.0
 
-        history.append(total)
-        renderHistory.append(render)
-        tilerHistory.append(tiler)
+        if let phaseRecorder {
+            phaseRecorder.measure("history.append") {
+                history.append(total)
+                renderHistory.append(render)
+                tilerHistory.append(tiler)
+            }
+        } else {
+            history.append(total)
+            renderHistory.append(render)
+            tilerHistory.append(tiler)
+        }
         return true
     }
 
     private func detail(includeHistory: Bool = false) -> GPUUsageDetail {
-        GPUUsageDetail(
+        let histories = includeHistory
+            ? phaseRecorder?.measure("history.snapshot") {
+                (
+                    history.orderedValues,
+                    renderHistory.orderedValues,
+                    tilerHistory.orderedValues
+                )
+            } ?? (history.orderedValues, renderHistory.orderedValues, tilerHistory.orderedValues)
+            : ([], [], [])
+        return GPUUsageDetail(
             total: total,
             render: render,
             tiler: tiler,
             model: Self.modelName,
-            history: includeHistory ? history.orderedValues : [],
-            renderHistory: includeHistory ? renderHistory.orderedValues : [],
-            tilerHistory: includeHistory ? tilerHistory.orderedValues : [],
+            history: histories.0,
+            renderHistory: histories.1,
+            tilerHistory: histories.2,
             historyCapacity: history.capacity
         )
     }

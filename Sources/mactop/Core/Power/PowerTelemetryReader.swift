@@ -187,9 +187,11 @@ public final class PowerTelemetryReader {
         private var didLogDebug = false
         private var previousSample: (sample: CFDictionary, time: Date)?
         private let maximumSampleInterval: TimeInterval
+        private let phaseRecorder: CoreReadPhaseRecorder?
 
-        init?(updateInterval: Double) {
+        init?(updateInterval: Double, phaseRecorder: CoreReadPhaseRecorder?) {
             maximumSampleInterval = max(5, updateInterval * 2)
+            self.phaseRecorder = phaseRecorder
             guard let api = Self.loadAPI(),
                   let channels = Self.copyPowerChannels(api: api) else { return nil }
 
@@ -212,7 +214,10 @@ public final class PowerTelemetryReader {
         }
 
         func readModeledPowerSample() -> PowerSample? {
-            guard let next = rawSample() else { return nil }
+            let next = measureCoreReadPhase(phaseRecorder, name: "io_report.sample") {
+                rawSample()
+            }
+            guard let next else { return nil }
             guard let previous = previousSample else {
                 previousSample = next
                 return nil
@@ -224,10 +229,15 @@ public final class PowerTelemetryReader {
 
             let previousPtr = Unmanaged.passUnretained(previous.sample).toOpaque()
             let nextPtr = Unmanaged.passUnretained(next.sample).toOpaque()
-            guard let deltaPtr = api.createSamplesDelta(previousPtr, nextPtr, nil) else { return nil }
+            let deltaPtr = measureCoreReadPhase(phaseRecorder, name: "io_report.delta") {
+                api.createSamplesDelta(previousPtr, nextPtr, nil)
+            }
+            guard let deltaPtr else { return nil }
             let delta = Unmanaged<CFDictionary>.fromOpaque(deltaPtr).takeRetainedValue()
 
-            return parsePower(delta: delta, elapsed: elapsed)
+            return measureCoreReadPhase(phaseRecorder, name: "io_report.parse") {
+                parsePower(delta: delta, elapsed: elapsed)
+            }
         }
 
         private func rawSample() -> (sample: CFDictionary, time: Date)? {
@@ -551,9 +561,11 @@ public final class PowerTelemetryReader {
     private var current: PowerSample?
     private let chargingCacheInterval: TimeInterval = 2
     private let updateInterval: Double
+    private let phaseRecorder: CoreReadPhaseRecorder?
 
-    public init(updateInterval: Double = 1) {
+    public init(updateInterval: Double = 1, phaseRecorder: CoreReadPhaseRecorder? = nil) {
         self.updateInterval = updateInterval
+        self.phaseRecorder = phaseRecorder
         history = PowerHistory(capacity: metricGraphSampleCapacity(updateInterval: updateInterval))
     }
 
@@ -581,13 +593,16 @@ public final class PowerTelemetryReader {
 
     public func readPowerUsageDetail(includeHistory: Bool = false) -> PowerUsageDetail {
         if !modeledPowerReaderAttempted {
-            modeledPowerReader = ModeledPowerReader(updateInterval: updateInterval)
+            modeledPowerReader = ModeledPowerReader(updateInterval: updateInterval, phaseRecorder: phaseRecorder)
             modeledPowerReaderAttempted = true
         }
 
-        let charging = readChargingDetail()
+        let charging = measureCoreReadPhase(phaseRecorder, name: "battery.read") {
+            readChargingDetail()
+        }
         let rawSystem = charging?.consumptionWatts
-        if let sample = modeledPowerReader?.readModeledPowerSample() {
+        let modeledSample = modeledPowerReader?.readModeledPowerSample()
+        if let sample = modeledSample {
             if let rawSystem, (lastRawSystem != rawSystem || systemOverhead == nil) {
                 systemOverhead = max(0, rawSystem - sample.modeled)
                 lastRawSystem = rawSystem
@@ -621,10 +636,19 @@ public final class PowerTelemetryReader {
         }
 
         if let sample = current {
-            history.append(sample, at: Date())
+            if let phaseRecorder {
+                phaseRecorder.measure("history.append") {
+                    history.append(sample, at: Date())
+                }
+            } else {
+                history.append(sample, at: Date())
+            }
         }
 
         let hasModeled = current?.hasModeled == true
+        let historyValues = includeHistory
+            ? measureCoreReadPhase(phaseRecorder, name: "history.snapshot") { history.values }
+            : []
         return PowerUsageDetail(
             total: current?.total,
             system: current?.system,
@@ -637,7 +661,7 @@ public final class PowerTelemetryReader {
             media: hasModeled ? current?.media : nil,
             display: hasModeled ? current?.display : nil,
             other: hasModeled ? current?.other : nil,
-            history: includeHistory ? history.values : []
+            history: historyValues
         )
     }
 

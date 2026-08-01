@@ -20,6 +20,8 @@ Source layout is intentionally split so agents can search by subsystem:
 - `Sources/mactop/UI/MetricPopups.swift`: metric popup panels and detailed dashboard views.
 - `Sources/mactop/UI/MetricCharts.swift`: popup chart views.
 - `Sources/mactopBench/main.swift`: headless per-subsystem CPU and memory benchmark used by `make bench`.
+- `Sources/mactop/Core/MetricReadPhaseRecorder.swift`: opt-in power/GPU phase timing used only by `mactopBench`.
+- `PERF.md`: deferred power/GPU optimization plan, current baseline, and post-migration validation criteria.
 - `Package.swift`: `mactopCore`, AppKit `mactop`, and headless `mactopBench` target boundaries.
 - `Tests/mactopTests/ProcessReadersTests.swift`: process ranking, CPU delta, power validation, and `ps` parser tests.
 - `Makefile`: development, install, uninstall, and cleanup tasks.
@@ -54,6 +56,8 @@ The output columns are defined as follows:
 - `peak_live_bytes`: peak increase in live malloc bytes from that same baseline.
 - `peak_reserved`: peak increase in allocator-reserved bytes.
 - `peak_footprint`: peak increase in task physical footprint from Mach `TASK_VM_INFO`.
+
+The report also prints opt-in phase timings for power and GPU. Power phases are `battery.read`, `io_report.sample`, `io_report.delta`, `io_report.parse`, and history work. GPU phases are `ioaccelerator.properties`, `ioaccelerator.service_lookup`, and history work. Phase timings are wall-clock durations summed across measured ticks; initialization phases are normally consumed by warm-up and may be absent from the steady-state report.
 
 These allocation columns measure live and peak allocator state, not the total number of malloc calls. Use Instruments only after `make bench` identifies a subsystem that needs call-site attribution. For a Time Profiler or Allocations trace, profile `mactopBench` rather than the menu-bar app so launch/AppKit work remains separate from core reader behavior.
 

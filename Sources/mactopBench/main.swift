@@ -21,7 +21,13 @@ private struct AllocationSnapshot {
     let physicalFootprint: UInt64
 }
 
-private struct BenchResult {
+private struct BenchPhaseResult: Codable {
+    let name: String
+    let count: Int
+    let wallNanoseconds: UInt64
+}
+
+private struct BenchResult: Codable {
     let name: String
     let ticks: Int
     let wallNanoseconds: UInt64
@@ -30,6 +36,7 @@ private struct BenchResult {
     let peakLiveBytes: Int
     let peakReservedBytes: Int
     let peakPhysicalFootprint: UInt64
+    let phases: [BenchPhaseResult]
 
     init(
         name: String,
@@ -39,7 +46,8 @@ private struct BenchResult {
         peakLiveBlocks: Int,
         peakLiveBytes: Int,
         peakReservedBytes: Int,
-        peakPhysicalFootprint: UInt64
+        peakPhysicalFootprint: UInt64,
+        phases: [BenchPhaseResult]
     ) {
         self.name = name
         self.ticks = ticks
@@ -49,39 +57,7 @@ private struct BenchResult {
         self.peakLiveBytes = peakLiveBytes
         self.peakReservedBytes = peakReservedBytes
         self.peakPhysicalFootprint = peakPhysicalFootprint
-    }
-
-    init?(serialized: String) {
-        let fields = serialized.split(separator: "\t", omittingEmptySubsequences: false)
-        guard fields.count == 8,
-              let ticks = Int(fields[1]),
-              let wallNanoseconds = UInt64(fields[2]),
-              let cpuNanoseconds = UInt64(fields[3]),
-              let peakLiveBlocks = Int(fields[4]),
-              let peakLiveBytes = Int(fields[5]),
-              let peakReservedBytes = Int(fields[6]),
-              let peakPhysicalFootprint = UInt64(fields[7]) else { return nil }
-        self.name = String(fields[0])
-        self.ticks = ticks
-        self.wallNanoseconds = wallNanoseconds
-        self.cpuNanoseconds = cpuNanoseconds
-        self.peakLiveBlocks = peakLiveBlocks
-        self.peakLiveBytes = peakLiveBytes
-        self.peakReservedBytes = peakReservedBytes
-        self.peakPhysicalFootprint = peakPhysicalFootprint
-    }
-
-    var serialized: String {
-        [
-            name,
-            String(ticks),
-            String(wallNanoseconds),
-            String(cpuNanoseconds),
-            String(peakLiveBlocks),
-            String(peakLiveBytes),
-            String(peakReservedBytes),
-            String(peakPhysicalFootprint),
-        ].joined(separator: "\t")
+        self.phases = phases
     }
 }
 
@@ -93,7 +69,12 @@ private struct MactopBench {
         let configuration = BenchConfiguration(environment: ProcessInfo.processInfo.environment)
         if let subsystem = subsystemArgument() {
             let result = measureSubsystem(named: subsystem, configuration: configuration)
-            print(result.serialized)
+            do {
+                let data = try JSONEncoder().encode(result)
+                print(String(decoding: data, as: UTF8.self))
+            } catch {
+                writeError("failed to encode \(subsystem) benchmark: \(error)", status: 1)
+            }
             return
         }
 
@@ -122,7 +103,8 @@ private struct MactopBench {
                       data: child.output.fileHandleForReading.readDataToEndOfFile(),
                       encoding: .utf8
                   )?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  let result = BenchResult(serialized: output) else {
+                  let data = output.data(using: .utf8),
+                  let result = try? JSONDecoder().decode(BenchResult.self, from: data) else {
                 writeError("benchmark child failed with status \(child.process.terminationStatus)", status: 1)
             }
             results.append(result)
@@ -137,6 +119,17 @@ private struct MactopBench {
         for name in subsystemNames {
             guard let result = results.first(where: { $0.name == name }) else { continue }
             print(format(result))
+        }
+        print("")
+        print("phase                         count  wall_ms  wall_ms/tick")
+        for subsystem in ["power", "gpu"] {
+            guard let result = results.first(where: { $0.name == subsystem }) else { continue }
+            print("\(subsystem):")
+            for phase in result.phases {
+                let wallMilliseconds = Double(phase.wallNanoseconds) / 1_000_000
+                let perTick = result.ticks > 0 ? wallMilliseconds / Double(result.ticks) : 0
+                print("  \(phase.name.padding(toLength: 27, withPad: " ", startingAt: 0)) \(String(format: "%5d", phase.count)) \(String(format: "%8.2f", wallMilliseconds)) \(String(format: "%12.3f", perTick))")
+            }
         }
     }
 
@@ -168,15 +161,17 @@ private struct MactopBench {
                 _ = reader.readRAMUsageDetail(includeHistory: true)
             }
         case "gpu":
-            let reader = GPUUsageReader(updateInterval: configuration.interval)
-            return measure(name: name, configuration: configuration) {
+            let phaseRecorder = CoreReadPhaseRecorder()
+            let reader = GPUUsageReader(updateInterval: configuration.interval, phaseRecorder: phaseRecorder)
+            return measure(name: name, configuration: configuration, sample: {
                 _ = reader.readGPUUsageDetail(includeHistory: true)
-            }
+            }, phaseRecorder: phaseRecorder)
         case "power":
-            let reader = PowerTelemetryReader(updateInterval: configuration.interval)
-            return measure(name: name, configuration: configuration) {
+            let phaseRecorder = CoreReadPhaseRecorder()
+            let reader = PowerTelemetryReader(updateInterval: configuration.interval, phaseRecorder: phaseRecorder)
+            return measure(name: name, configuration: configuration, sample: {
                 _ = reader.readPowerUsageDetail(includeHistory: true)
-            }
+            }, phaseRecorder: phaseRecorder)
         case "net":
             let reader = NetworkInterfaceReader(updateInterval: configuration.interval, fetchPublicIP: false)
             return measure(name: name, configuration: configuration) {
@@ -190,11 +185,13 @@ private struct MactopBench {
     private static func measure(
         name: String,
         configuration: BenchConfiguration,
-        sample: () -> Void
+        sample: () -> Void,
+        phaseRecorder: CoreReadPhaseRecorder? = nil
     ) -> BenchResult {
         for _ in 0..<configuration.warmupTicks {
             autoreleasepool(invoking: sample)
         }
+        phaseRecorder?.reset()
 
         let baseline = allocationSnapshot()
         let startWall = DispatchTime.now().uptimeNanoseconds
@@ -236,7 +233,10 @@ private struct MactopBench {
             peakReservedBytes: Swift.max(0, peak.reservedBytes - baseline.reservedBytes),
             peakPhysicalFootprint: peak.physicalFootprint >= baseline.physicalFootprint
                 ? peak.physicalFootprint - baseline.physicalFootprint
-                : 0
+                : 0,
+            phases: phaseRecorder?.snapshot().map {
+                BenchPhaseResult(name: $0.name, count: $0.count, wallNanoseconds: $0.wallNanoseconds)
+            } ?? []
         )
     }
 
