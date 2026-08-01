@@ -2,7 +2,10 @@ import Foundation
 
 // Coordinates timed reads from core metric sources and delivers typed snapshots
 // to the UI without importing AppKit or owning presentation state.
-public final class SystemMetricsCoordinator {
+// Reader state and coordinator flags are confined to their respective serial
+// queues. The unchecked conformance makes that ownership boundary explicit to
+// Swift's concurrency checker when DispatchQueue invokes @Sendable closures.
+public final class SystemMetricsCoordinator: @unchecked Sendable {
     private let cpuReader: CPUUsageReader
     private let ramReader: RAMUsageReader
     private let gpuReader: GPUUsageReader
@@ -14,7 +17,7 @@ public final class SystemMetricsCoordinator {
     private let gpuQueue = DispatchQueue(label: "mactop.gpu-metrics-reader", qos: .utility)
     private let powerQueue = DispatchQueue(label: "mactop.power-metrics-reader", qos: .utility)
     private let networkQueue = DispatchQueue(label: "mactop.network-metrics-reader", qos: .utility)
-    private let onPower: (PowerUsageDetail) -> Void
+    private let onPower: @MainActor @Sendable (PowerUsageDetail) -> Void
     private var timers: [DispatchSourceTimer] = []
     private var cpuReadInFlight = false
     private var ramReadInFlight = false
@@ -27,11 +30,11 @@ public final class SystemMetricsCoordinator {
     private var dataEpoch = 0
 
     public init(config: MactopConfig,
-         onCPU: @escaping (CPUUsageDetail) -> Void,
-         onRAM: @escaping (RAMUsageDetail) -> Void,
-         onGPU: @escaping (GPUUsageDetail) -> Void,
-         onPower: @escaping (PowerUsageDetail) -> Void,
-         onNetwork: @escaping (NetworkUsageDetail) -> Void) {
+         onCPU: @escaping @MainActor @Sendable (CPUUsageDetail) -> Void,
+         onRAM: @escaping @MainActor @Sendable (RAMUsageDetail) -> Void,
+         onGPU: @escaping @MainActor @Sendable (GPUUsageDetail) -> Void,
+         onPower: @escaping @MainActor @Sendable (PowerUsageDetail) -> Void,
+         onNetwork: @escaping @MainActor @Sendable (NetworkUsageDetail) -> Void) {
 
         let interval = config.updateInterval
         cpuReader = CPUUsageReader(updateInterval: interval)
@@ -52,10 +55,10 @@ public final class SystemMetricsCoordinator {
         timers = [timer]
     }
 
-    private func refreshAll(onCPU: @escaping (CPUUsageDetail) -> Void,
-                            onRAM: @escaping (RAMUsageDetail) -> Void,
-                            onGPU: @escaping (GPUUsageDetail) -> Void,
-                            onNetwork: @escaping (NetworkUsageDetail) -> Void) {
+    private func refreshAll(onCPU: @escaping @MainActor @Sendable (CPUUsageDetail) -> Void,
+                            onRAM: @escaping @MainActor @Sendable (RAMUsageDetail) -> Void,
+                            onGPU: @escaping @MainActor @Sendable (GPUUsageDetail) -> Void,
+                            onNetwork: @escaping @MainActor @Sendable (NetworkUsageDetail) -> Void) {
         guard !isPaused, !isSleeping else { return }
 
         let includeNetworkHistory = historyEnabled[0]

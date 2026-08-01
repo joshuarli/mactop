@@ -4,7 +4,7 @@ import IOKit
 
 // Reads GPU, renderer, and tiler utilization from IOKit IOAccelerator statistics.
 
-public struct GPUUsageDetail {
+public struct GPUUsageDetail: Sendable {
     public var total: Double
     public var render: Double
     public var tiler: Double
@@ -15,7 +15,7 @@ public struct GPUUsageDetail {
     public var historyCapacity: Int
 }
 
-public final class GPUUsageReader {
+public final class GPUUsageReader: @unchecked Sendable {
     private var history: ScalarHistory
     private var renderHistory: ScalarHistory
     private var tilerHistory: ScalarHistory
@@ -53,7 +53,7 @@ public final class GPUUsageReader {
         var buf = [CChar](repeating: 0, count: 256)
         var size = buf.count
         sysctlbyname("machdep.cpu.brand_string", &buf, &size, nil, 0)
-        let brand = String(cString: buf)
+        let brand = decodeNullTerminatedCString(buf)
         return brand.isEmpty ? "GPU" : brand + " GPU"
     }()
 

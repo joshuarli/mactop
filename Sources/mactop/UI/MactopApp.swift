@@ -16,6 +16,7 @@ struct MactopApp {
     }
 }
 
+@MainActor
 class MactopAppDelegate: NSObject, NSApplicationDelegate {
     private var statusItems: [NSStatusItem] = []
     private var cpuView: PercentageStatusItemView!
@@ -177,8 +178,9 @@ class MactopAppDelegate: NSObject, NSApplicationDelegate {
             self?.closeAllPanels()
         }
 
-        cpuProcessQueue.async { [weak self] in
-            _ = self?.cpuProcessReader.readTopCPUProcessMetrics()
+        let cpuProcessReader = self.cpuProcessReader
+        cpuProcessQueue.async {
+            _ = cpuProcessReader.readTopCPUProcessMetrics()
         }
         let detailTimer = DispatchSource.makeTimerSource(queue: .main)
         detailTimer.schedule(deadline: .now() + .seconds(3), repeating: .seconds(3), leeway: .milliseconds(250))
@@ -199,13 +201,15 @@ class MactopAppDelegate: NSObject, NSApplicationDelegate {
         self.popupRefreshTimer = detailTimer
     }
 
-    deinit {
+    func applicationWillTerminate(_ notification: Notification) {
         NotificationCenter.default.removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         popupRefreshTimer?.cancel()
         if let powerSourceRunLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), powerSourceRunLoopSource, .defaultMode)
         }
+        popupRefreshTimer = nil
+        powerSourceRunLoopSource = nil
     }
 
     @objc private func systemDidWake(_ notification: Notification) {
@@ -278,9 +282,9 @@ class MactopAppDelegate: NSObject, NSApplicationDelegate {
         case 0:
             guard !networkProcessReadInFlight else { return }
             networkProcessReadInFlight = true
+            let reader = networkProcessReader
             networkProcessQueue.async { [weak self] in
-                guard let self else { return }
-                let procs = self.networkProcessReader.readTopNetworkProcessMetrics()
+                let procs = reader.readTopNetworkProcessMetrics()
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     self.networkProcessReadInFlight = false
@@ -294,9 +298,9 @@ class MactopAppDelegate: NSObject, NSApplicationDelegate {
         case 1:
             guard !cpuProcessReadInFlight else { return }
             cpuProcessReadInFlight = true
+            let reader = cpuProcessReader
             cpuProcessQueue.async { [weak self] in
-                guard let self else { return }
-                let procs = self.cpuProcessReader.readTopCPUProcessMetrics()
+                let procs = reader.readTopCPUProcessMetrics()
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     self.cpuProcessReadInFlight = false
@@ -310,9 +314,9 @@ class MactopAppDelegate: NSObject, NSApplicationDelegate {
         case 2:
             guard !ramProcessReadInFlight else { return }
             ramProcessReadInFlight = true
+            let reader = ramProcessReader
             ramProcessQueue.async { [weak self] in
-                guard let self else { return }
-                let procs = self.ramProcessReader.readTopRAMProcessMetrics()
+                let procs = reader.readTopRAMProcessMetrics()
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     self.ramProcessReadInFlight = false

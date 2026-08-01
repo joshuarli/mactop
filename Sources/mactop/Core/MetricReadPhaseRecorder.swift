@@ -1,12 +1,12 @@
 import Foundation
 
-public struct CoreReadPhaseStats {
+public struct CoreReadPhaseStats: Sendable {
     public let name: String
     public let count: Int
     public let wallNanoseconds: UInt64
 }
 
-public final class CoreReadPhaseRecorder {
+public final class CoreReadPhaseRecorder: @unchecked Sendable {
     private var counts: [String: Int] = [:]
     private var wallNanoseconds: [String: UInt64] = [:]
 

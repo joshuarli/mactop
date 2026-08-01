@@ -5,7 +5,7 @@ import SystemConfiguration
 // Reads aggregate en* interface byte counters and caches active-interface metadata
 // such as local address, SSID, MAC address, and negotiated link rate.
 
-public struct NetworkUsageDetail {
+public struct NetworkUsageDetail: Sendable {
     public var upload: Double
     public var download: Double
     public var totalUp: UInt64
@@ -15,14 +15,13 @@ public struct NetworkUsageDetail {
     public var macAddress: String        // e.g. "a4:c3:f0:12:34:56"
     public var ssid: String?             // WiFi only
     public var localIP: String
-    public var publicIP: String?         // async-fetched; nil until available
     public var transmitRate: Double      // Mbps from ifi_baudrate
     public var isUp: Bool
     public var history: [MetricHistoryPoint<(up: Double, down: Double)>]
     public var historyCapacity: Int
 }
 
-public final class NetworkInterfaceReader {
+public final class NetworkInterfaceReader: @unchecked Sendable {
     private var prevUp: UInt64 = 0
     private var prevDown: UInt64 = 0
     private var cumulativeUp: UInt64 = 0
@@ -43,14 +42,7 @@ public final class NetworkInterfaceReader {
     private var cachedSSID: String? = nil
     private var cachedTransmitRate: Double = 0
 
-    // Public IP — fetched async, at most every 300 s
-    private var publicIPLastFetch = Date.distantPast
-    private var cachedPublicIP: String? = nil
-    private let publicIPLock = NSLock()
-    private let fetchPublicIP: Bool
-
-    public init(updateInterval: Double = 1, fetchPublicIP: Bool = true) {
-        self.fetchPublicIP = fetchPublicIP
+    public init(updateInterval: Double = 1) {
         history = PairHistory(capacity: metricGraphSampleCapacity(updateInterval: updateInterval))
     }
 
@@ -71,7 +63,7 @@ public final class NetworkInterfaceReader {
         guard getifaddrs(&ifap) == 0, let head = ifap else {
             return NetworkUsageDetail(upload: 0, download: 0, totalUp: cumulativeUp, totalDown: cumulativeDown,
                              interfaceName: cachedInterfaceName, displayName: cachedDisplayName, macAddress: cachedMAC, ssid: cachedSSID,
-                             localIP: cachedLocalIP, publicIP: lockedPublicIP(), transmitRate: cachedTransmitRate, isUp: cachedIsUp,
+                             localIP: cachedLocalIP, transmitRate: cachedTransmitRate, isUp: cachedIsUp,
                              history: includeHistory ? history.orderedValues : [], historyCapacity: history.capacity)
         }
         defer { freeifaddrs(head) }
@@ -86,7 +78,7 @@ public final class NetworkInterfaceReader {
         var cursor: UnsafeMutablePointer<ifaddrs>? = head
         while let iface = cursor {
             defer { cursor = iface.pointee.ifa_next }
-            let name = String(cString: iface.pointee.ifa_name)
+            let name = decodeNullTerminatedCString(iface.pointee.ifa_name)
             guard name.hasPrefix("en") else { continue }
 
             if let addr = iface.pointee.ifa_addr,
@@ -128,7 +120,7 @@ public final class NetworkInterfaceReader {
                         inet_ntop(AF_INET, &inAddr, &buf, socklen_t(INET_ADDRSTRLEN))
                     }
                 }
-                ipByInterface[name] = String(cString: buf)
+                ipByInterface[name] = decodeNullTerminatedCString(buf)
                 if firstIPInterface.isEmpty { firstIPInterface = name }
             }
         }
@@ -162,10 +154,6 @@ public final class NetworkInterfaceReader {
 
         history.append(up: upRate, down: downRate)
 
-        if fetchPublicIP {
-            refreshPublicIP()
-        }
-
         return NetworkUsageDetail(
             upload: upRate,
             download: downRate,
@@ -176,7 +164,6 @@ public final class NetworkInterfaceReader {
             macAddress: cachedMAC,
             ssid: cachedSSID,
             localIP: cachedLocalIP,
-            publicIP: lockedPublicIP(),
             transmitRate: cachedTransmitRate,
             isUp: cachedIsUp,
             history: includeHistory ? history.orderedValues : [],
@@ -248,28 +235,6 @@ public final class NetworkInterfaceReader {
             break
         }
     }
-
-    // Fetches public IPv4 from ipify — throttled to 300 s, non-blocking
-    private func refreshPublicIP() {
-        guard Date().timeIntervalSince(publicIPLastFetch) >= 300,
-              let publicIPURL = Self.publicIPURL else { return }
-        publicIPLastFetch = Date()
-        URLSession.shared.dataTask(with: publicIPURL) { [weak self] data, _, _ in
-            guard let self, let data,
-                  let ip = String(data: data, encoding: .utf8) else { return }
-            self.publicIPLock.lock()
-            self.cachedPublicIP = ip.trimmingCharacters(in: .whitespacesAndNewlines)
-            self.publicIPLock.unlock()
-        }.resume()
-    }
-
-    private func lockedPublicIP() -> String? {
-        publicIPLock.lock()
-        defer { publicIPLock.unlock() }
-        return cachedPublicIP
-    }
-
-    private static let publicIPURL = URL(string: "https://api.ipify.org")
 
     private static func macString(bytes: UnsafeRawBufferPointer, offset: Int) -> String {
         guard offset + 5 < bytes.count else { return "" }

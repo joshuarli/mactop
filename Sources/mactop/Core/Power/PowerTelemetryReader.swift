@@ -5,7 +5,7 @@ import IOKit
 // Combines AppleSmartBattery system-power telemetry with modeled IOReport component
 // energy so the UI can distinguish whole-machine draw from the SoC subtotal.
 
-public struct PowerUsageDetail {
+public struct PowerUsageDetail: Sendable {
     public var total: Double?
     public var system: Double?
     public var modeled: Double?
@@ -30,7 +30,7 @@ func validatedPowerReadingWatts(_ watts: Double) -> Double? {
     return watts
 }
 
-public struct PowerHistorySample: Equatable {
+public struct PowerHistorySample: Equatable, Sendable {
     public var total: Double
     public var modeled: Double
     public var cpu: Double
@@ -57,7 +57,7 @@ public struct PowerHistorySample: Equatable {
     }
 }
 
-public struct BatteryChargingDetail {
+public struct BatteryChargingDetail: Sendable {
     public var externalConnected: Bool
     public var isCharging: Bool
     public var isFullyCharged: Bool
@@ -85,7 +85,7 @@ public struct BatteryChargingDetail {
     }
 }
 
-public final class PowerTelemetryReader {
+public final class PowerTelemetryReader: @unchecked Sendable {
     private struct PowerSample {
         var cpu: Double
         var gpu: Double

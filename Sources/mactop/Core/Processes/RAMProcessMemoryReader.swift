@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-public final class RAMProcessMemoryReader {
+public final class RAMProcessMemoryReader: @unchecked Sendable {
     private var nameCache: [Int32: String] = [:]
 
     public init() {}

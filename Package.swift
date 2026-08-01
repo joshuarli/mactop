@@ -1,9 +1,14 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.3
 import PackageDescription
+
+let swift6Settings: [SwiftSetting] = [
+    .swiftLanguageMode(.v6),
+    .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
+]
 
 let package = Package(
     name: "mactop",
-    platforms: [.macOS("15.7")],
+    platforms: [.macOS("26.5.2")],
     products: [
         .library(name: "mactopCore", targets: ["mactopCore"]),
         .executable(name: "mactop", targets: ["mactop"]),
@@ -13,7 +18,7 @@ let package = Package(
         .target(
             name: "mactopCore",
             path: "Sources/mactop/Core",
-            swiftSettings: [.swiftLanguageMode(.v5)],
+            swiftSettings: swift6Settings,
             linkerSettings: [
                 .linkedFramework("IOKit"),
                 .linkedFramework("SystemConfiguration"),
@@ -23,13 +28,17 @@ let package = Package(
             name: "mactop",
             dependencies: ["mactopCore"],
             path: "Sources/mactop/UI",
-            swiftSettings: [.swiftLanguageMode(.v5)],
+            swiftSettings: [
+                .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
+                .defaultIsolation(MainActor.self),
+                .swiftLanguageMode(.v6),
+            ],
         ),
         .executableTarget(
             name: "mactopBench",
             dependencies: ["mactopCore"],
             path: "Sources/mactopBench",
-            swiftSettings: [.swiftLanguageMode(.v5)],
+            swiftSettings: swift6Settings,
             linkerSettings: [
                 .linkedFramework("IOKit"),
                 .linkedFramework("SystemConfiguration"),
@@ -37,7 +46,8 @@ let package = Package(
         ),
         .testTarget(
             name: "mactopTests",
-            dependencies: ["mactopCore"]
+            dependencies: ["mactopCore"],
+            swiftSettings: swift6Settings
         ),
     ]
 )

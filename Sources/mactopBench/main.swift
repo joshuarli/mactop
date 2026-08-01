@@ -112,7 +112,7 @@ private struct MactopBench {
 
         print("mactop core benchmark")
         let totalWall = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000_000
-        print("duration=\(formatSeconds(configuration.duration))s interval=\(formatSeconds(configuration.interval))s warmup_ticks=\(configuration.warmupTicks) concurrent_subsystems=\(subsystemNames.count) total_wall=\(formatSeconds(totalWall))s public_ip=disabled")
+        print("duration=\(formatSeconds(configuration.duration))s interval=\(formatSeconds(configuration.interval))s warmup_ticks=\(configuration.warmupTicks) concurrent_subsystems=\(subsystemNames.count) total_wall=\(formatSeconds(totalWall))s")
         print("Each subsystem runs in an isolated headless child process concurrently. Memory columns are allocator/task high-water deltas.")
         print("")
         print("subsystem  ticks  wall_ms  cpu_ms  cpu_ms/tick  peak_live_allocs  peak_live_bytes  peak_reserved  peak_footprint")
@@ -173,7 +173,7 @@ private struct MactopBench {
                 _ = reader.readPowerUsageDetail(includeHistory: true)
             }, phaseRecorder: phaseRecorder)
         case "net":
-            let reader = NetworkInterfaceReader(updateInterval: configuration.interval, fetchPublicIP: false)
+            let reader = NetworkInterfaceReader(updateInterval: configuration.interval)
             return measure(name: name, configuration: configuration) {
                 _ = reader.readNetworkUsageDetail(includeHistory: true)
             }

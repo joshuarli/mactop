@@ -5,7 +5,7 @@ import Foundation
 //
 // Configure with: defaults write com.mactop UpdateInterval 2
 
-public struct MactopConfig {
+public struct MactopConfig: Sendable {
     public var updateInterval: Double
 
     static let bundleID = "com.mactop"

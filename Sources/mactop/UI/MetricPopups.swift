@@ -1044,7 +1044,6 @@ final class NetworkPopupView: NSStackView {
 
     // Address section
     private var localIPField:  ValueField!
-    private var publicIPField: ValueField!
 
     private var netProcessesView: RankedProcessListView!
     private let processCount = 8
@@ -1216,7 +1215,6 @@ final class NetworkPopupView: NSStackView {
         view.addArrangedSubview(sepRow)
 
         localIPField  = addPopupValueRow(view, title: "Local IP:",  value: "Unknown").1
-        publicIPField = addPopupValueRow(view, title: "Public IP:", value: "Unknown").1
         return view
     }
 
@@ -1291,7 +1289,6 @@ final class NetworkPopupView: NSStackView {
         ifaceStatusField.stringValue = detail.isUp ? "Active" : "Inactive"
 
         localIPField.stringValue  = detail.localIP.isEmpty    ? "Unknown" : detail.localIP
-        publicIPField.stringValue = detail.publicIP ?? "Fetching…"
 
         usageChart.resetThroughputHistory(sampleCount: max(initialChartSamples, detail.historyCapacity))
         usageChart.setThroughputHistory(detail.history)
@@ -1305,7 +1302,6 @@ final class NetworkPopupView: NSStackView {
         interfaceField.stringValue = "--"
         ifaceStatusField.stringValue = "--"
         localIPField.stringValue = "--"
-        publicIPField.stringValue = "--"
         usageChart.setThroughputHistory([])
         netProcessesView.clearRankedProcesses()
     }

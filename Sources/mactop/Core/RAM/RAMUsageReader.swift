@@ -3,7 +3,7 @@ import Foundation
 
 // Reads aggregate memory pressure, VM usage, swap usage, and RAM chart history
 // from Mach VM statistics and sysctl.
-public struct RAMUsageDetail {
+public struct RAMUsageDetail: Sendable {
     public var total: Double
     public var appBytes: UInt64
     public var wiredBytes: UInt64
@@ -16,12 +16,17 @@ public struct RAMUsageDetail {
     public var historyCapacity: Int
 }
 
-public final class RAMUsageReader {
+public final class RAMUsageReader: @unchecked Sendable {
     private let totalBytes: UInt64 = {
         var n: UInt64 = 0
         var size = MemoryLayout<UInt64>.size
         sysctlbyname("hw.memsize", &n, &size, nil, 0)
         return n
+    }()
+    private let pageSize: UInt64 = {
+        var pageSize: vm_size_t = 0
+        guard host_page_size(mach_host_self(), &pageSize) == KERN_SUCCESS else { return 0 }
+        return UInt64(pageSize)
     }()
     private var history: ScalarHistory
     private var cachedSwapBytes: UInt64 = 0
@@ -52,7 +57,12 @@ public final class RAMUsageReader {
                              history: includeHistory ? history.orderedValues : [], historyCapacity: history.capacity)
         }
 
-        let page = UInt64(vm_page_size)
+        guard pageSize > 0 else {
+            return RAMUsageDetail(total: 0, appBytes: 0, wiredBytes: 0, compressedBytes: 0,
+                             freeBytes: 0, swapBytes: 0, totalBytes: totalBytes, pressureLevel: 0,
+                             history: includeHistory ? history.orderedValues : [], historyCapacity: history.capacity)
+        }
+        let page = pageSize
         let active      = UInt64(stats.active_count)          * page
         let inactive    = UInt64(stats.inactive_count)        * page
         let speculative = UInt64(stats.speculative_count)     * page

@@ -12,7 +12,7 @@ import Foundation
 //   Runs /bin/ps -Aceo pid,pcpu,comm -r (setuid root, so sees all processes).
 //   Returns p_pctcpu-based values for every process, consistent across users.
 
-public final class CPUProcessUsageReader {
+public final class CPUProcessUsageReader: @unchecked Sendable {
     // Probe cross-user rusage access once. proc_pid_rusage on PID 1 (launchd, always
     // root-owned) succeeds only with com.apple.system-task-ports.read or setuid root.
     private let nativeCrossUser: Bool = {

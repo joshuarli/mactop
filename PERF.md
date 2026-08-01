@@ -1,6 +1,6 @@
 # Performance Plan
 
-This document records the next performance work for `mactop`. The work is intentionally deferred until the project migrates to **macOS 26.5 or newer** and **Swift 6.2 or newer**. Do not begin the optimization work below before that migration unless a production regression requires it.
+This document records the next performance work for `mactop`. The work is intentionally deferred until the project migrates to **macOS 26.5.2 or newer** and **Swift 6.3.3 or newer**. Do not begin the optimization work below before that migration unless a production regression requires it.
 
 ## Current Baseline
 
@@ -10,7 +10,7 @@ The baseline comes from the concurrent headless benchmark in `Sources/mactopBenc
 - Each child warms up for two ticks, then reads once per second for five seconds.
 - The benchmark links only `mactopCore`; it does not start AppKit or the menu-bar application.
 - `includeHistory` is enabled, so this is a conservative core-read baseline.
-- Public IP fetching is disabled with `NetworkInterfaceReader(fetchPublicIP: false)`.
+- The network reader performs no external network requests.
 
 Representative diagnostic run:
 
@@ -40,7 +40,7 @@ Representative steady-state power phases over five ticks:
 
 ### Power optimization order
 
-1. **Investigate IOReport sampling cost.** The `api.createSamples(...)` call in `PowerTelemetryReader.ModeledPowerReader.rawSample()` is the dominant phase. Check whether macOS 26.5/IOReport provides a lighter sample path, a reusable sample object, or a safe lower-frequency cadence.
+1. **Investigate IOReport sampling cost.** The `api.createSamples(...)` call in `PowerTelemetryReader.ModeledPowerReader.rawSample()` is the dominant phase. Check whether macOS 26.5.2/IOReport provides a lighter sample path, a reusable sample object, or a safe lower-frequency cadence.
 2. **Reduce channel parsing work.** `PowerTelemetryReader.ModeledPowerReader.parsePower()` repeatedly converts group, subgroup, channel, and unit values to Swift strings for every channel. Cache stable channel classification and unit metadata where the private ABI makes that safe.
 3. **Preserve dynamic channel matching.** Any cache must continue to support Apple changing channel names, DCP/DCPEXT display groups, and the existing aggregate-versus-detail-channel exclusions. Validate with `MACTOP_DEBUG_POWER=1` after every channel-parser change.
 4. **Leave history and battery work alone initially.** Their measured cost is too small to justify complexity before the IOReport path is addressed.
@@ -71,7 +71,7 @@ Every optimization must preserve:
 
 ## Validation After Migration
 
-After migrating to macOS 26.5+ and Swift 6.2+:
+After migrating to macOS 26.5.2+ and Swift 6.3.3+:
 
 1. Record a fresh unmodified baseline with `make bench`.
 2. Run at least three comparable benchmark samples on the same power state.
@@ -79,4 +79,3 @@ After migrating to macOS 26.5+ and Swift 6.2+:
 4. Run `swift build` and `swift test`.
 5. Run the app and verify power/GPU values visually and with `MACTOP_DEBUG_POWER=1` where relevant.
 6. Keep an optimization only when it improves steady-state cost without changing the supported metric contract.
-

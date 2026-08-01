@@ -6,7 +6,7 @@ import Foundation
 func processDisplayName(pid: Int32) -> String {
     var nameBuf = [CChar](repeating: 0, count: 1024)
     proc_name(pid, &nameBuf, UInt32(nameBuf.count))
-    let rawName = String(cString: nameBuf)
+    let rawName = decodeNullTerminatedCString(nameBuf)
 
     if rawName == "plugin-container" {
         return bundleDisplayName(pid: pid) ?? rawName
@@ -23,7 +23,7 @@ private func bundleDisplayName(pid: Int32) -> String? {
     var pathBuf = [CChar](repeating: 0, count: 4096)
     guard proc_pidpath(pid, &pathBuf, UInt32(pathBuf.count)) > 0 else { return nil }
 
-    var url = URL(fileURLWithPath: String(cString: pathBuf))
+    var url = URL(fileURLWithPath: decodeNullTerminatedCString(pathBuf))
     while url.path != "/" {
         if url.pathExtension == "app" {
             if let bundle = Bundle(url: url),
@@ -45,7 +45,7 @@ private func versionedExecutableOwnerName(pid: Int32, rawName: String) -> String
     var pathBuf = [CChar](repeating: 0, count: 4096)
     guard proc_pidpath(pid, &pathBuf, UInt32(pathBuf.count)) > 0 else { return nil }
 
-    let url = URL(fileURLWithPath: String(cString: pathBuf))
+    let url = URL(fileURLWithPath: decodeNullTerminatedCString(pathBuf))
     let components = url.pathComponents
     guard components.last == rawName,
           components.count >= 3,

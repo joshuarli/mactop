@@ -3,8 +3,8 @@ import Foundation
 
 // Reads per-process network byte counters from Apple's private NetworkStatistics ABI;
 // the reader stays dormant until the network popup requests a visible process list.
-public final class NetworkProcessReader {
-    private final class NativeReader {
+public final class NetworkProcessReader: @unchecked Sendable {
+    private final class NativeReader: @unchecked Sendable {
         private typealias NStatManagerCreateFn = @convention(c) (
             CFAllocator?,
             DispatchQueue,
@@ -101,11 +101,13 @@ public final class NetworkProcessReader {
                     self?.updateNetworkSourceStatistics(key: key, dict)
                 }
                 let removedBlock: @convention(block) () -> Void = { [weak self] in
-                    self?.queue.async {
-                        self?.sources.removeValue(forKey: key)
-                        self?.descriptionBlocks.removeValue(forKey: key)
-                        self?.countsBlocks.removeValue(forKey: key)
-                        self?.removedBlocks.removeValue(forKey: key)
+                    guard let self else { return }
+                    self.queue.async { [weak self] in
+                        guard let self else { return }
+                        self.sources.removeValue(forKey: key)
+                        self.descriptionBlocks.removeValue(forKey: key)
+                        self.countsBlocks.removeValue(forKey: key)
+                        self.removedBlocks.removeValue(forKey: key)
                     }
                 }
                 self.descriptionBlocks[key] = descriptionBlock

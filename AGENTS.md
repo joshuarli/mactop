@@ -38,7 +38,7 @@ make bench
 
 `make bench` builds and runs the `mactopBench` executable from `Sources/mactopBench/main.swift`. It links only the `mactopCore` target from `Sources/mactop/Core/`; it does not create an `NSApplication`, register an `NSStatusItem`, construct popup views, run AppKit timers, or execute `SystemMetricsCoordinator`.
 
-The benchmark launches one isolated child process per subsystem and starts all five children concurrently: `CPUUsageReader`, `RAMUsageReader`, `GPUUsageReader`, `PowerTelemetryReader`, and `NetworkInterfaceReader`. Each child gets two warm-up ticks, then one read per interval for five seconds, so the default measured wall time is approximately five seconds plus child startup and build time. The output reports the actual completed `ticks`. Per-subsystem allocator and footprint measurements are isolated because each child owns exactly one reader. The network run sets `fetchPublicIP: false` so external HTTP latency and callbacks do not contaminate the baseline.
+The benchmark launches one isolated child process per subsystem and starts all five children concurrently: `CPUUsageReader`, `RAMUsageReader`, `GPUUsageReader`, `PowerTelemetryReader`, and `NetworkInterfaceReader`. Each child gets two warm-up ticks, then one read per interval for five seconds, so the default measured wall time is approximately five seconds plus child startup and build time. The output reports the actual completed `ticks`. Per-subsystem allocator and footprint measurements are isolated because each child owns exactly one reader. The network run performs no external network requests, so HTTP latency and callbacks do not contaminate the baseline.
 
 The default cadence can be overridden without editing the repository:
 
@@ -119,7 +119,7 @@ Power uses two sources:
 - It is normal for System power to be considerably higher than modeled component power. The modeled subtotal is not board power. The PWR popup should keep System and the modeled subtotal separate and graph System as the outer total with the component stack inside it, so the System-minus-modeled delta is visible. Keep Display and Media as separate chart bands; do not collapse them into Other SoC after computing them as separate rows.
 - Set `MACTOP_DEBUG_POWER=1` to print the matched private power channels and watts once after the first delta sample. This is useful when Apple changes channel names on new chips or macOS releases.
 
-Network interface totals use `getifaddrs` and sum `en*` interface byte counters. Interface metadata uses SystemConfiguration. Public IP is fetched asynchronously from `https://api.ipify.org`.
+Network interface totals use `getifaddrs` and sum `en*` interface byte counters. Interface metadata uses SystemConfiguration for the active interface, local IP, SSID, MAC, and link speed.
 
 Network top processes are intended to use the private `NetworkStatistics.framework` in-process. This is the same underlying data source used by `nettop`, but it is a private Apple ABI and may change across macOS releases.
 

@@ -4,7 +4,7 @@ import Foundation
 // Shared process-row types and ranking/parsing helpers used by CPU, RAM, and network
 // process readers. These helpers are not tied to any one metric source.
 
-public struct RankedProcessMetric {
+public struct RankedProcessMetric: Sendable {
     public var pid: Int32
     public var name: String
     public var value: Double   // CPU: percent (0–100); RAM: bytes
@@ -14,6 +14,19 @@ public struct RankedProcessMetric {
         self.name = name
         self.value = value
     }
+}
+
+func decodeNullTerminatedCString(_ bytes: [CChar]) -> String {
+    String(
+        decoding: bytes.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) },
+        as: UTF8.self
+    )
+}
+
+func decodeNullTerminatedCString(_ pointer: UnsafePointer<CChar>) -> String {
+    let length = strlen(pointer)
+    let bytes = UnsafeBufferPointer(start: pointer, count: length)
+    return String(decoding: bytes.map { UInt8(bitPattern: $0) }, as: UTF8.self)
 }
 // FSCALE on Darwin/macOS: 1 << FSHIFT where FSHIFT=11, so FSCALE=2048.
 let kFScale: Double = 2048.0

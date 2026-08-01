@@ -3,13 +3,13 @@ import Foundation
 
 // Reads aggregate CPU utilization, per-core utilization, load averages, and uptime
 // from Mach and sysctl sources, retaining only the recent chart history window.
-public enum CPUCoreKind {
+public enum CPUCoreKind: Sendable {
     case efficiency
     case performance
     case unknown
 }
 
-public struct CPUUsageDetail {
+public struct CPUUsageDetail: Sendable {
     public var total: Double
     public var system: Double
     public var user: Double
@@ -24,7 +24,7 @@ public struct CPUUsageDetail {
     public var historyCapacity: Int
 }
 
-public final class CPUUsageReader {
+public final class CPUUsageReader: @unchecked Sendable {
     private struct Tick { var user, sys, idle, nice: Double }
     private var prev: [Tick] = []
     private var ticks: [Tick] = []
@@ -196,7 +196,7 @@ public final class CPUUsageReader {
 
                 var nameBuffer = [CChar](repeating: 0, count: 128)
                 guard IORegistryEntryGetName(child, &nameBuffer) == KERN_SUCCESS else { continue }
-                let name = String(cString: nameBuffer)
+                let name = decodeNullTerminatedCString(nameBuffer)
                 guard name.range(of: #"^cpu\d+"#, options: .regularExpression) != nil else { continue }
 
                 var unmanagedProperties: Unmanaged<CFMutableDictionary>?
@@ -255,7 +255,7 @@ public final class CPUUsageReader {
             var nameBuffer = [CChar](repeating: 0, count: 64)
             var nameSize = nameBuffer.count
             guard sysctlbyname("hw.perflevel\(level).name", &nameBuffer, &nameSize, nil, 0) == 0,
-                  String(cString: nameBuffer) == name else { continue }
+                  decodeNullTerminatedCString(nameBuffer) == name else { continue }
 
             var count: Int32 = 0
             var countSize = MemoryLayout<Int32>.size
