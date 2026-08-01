@@ -1,10 +1,4 @@
-# mactop Agent Guide
-
-## Project Shape
-
-`mactop` is a Swift Package Manager macOS menu-bar utility. It is an accessory `NSApplication`, not a bundled `.app`. The entry point is `Sources/mactop/App.swift`.
-
-The supported deployment target is macOS 15.7 or newer.
+`mactop` is a macOS menu-bar utility for tracking system stats in a short, recent timeframe with the lowest possible runtime overhead.
 
 Core files:
 
@@ -16,13 +10,6 @@ Core files:
 - `Charts.swift`: popup chart views.
 - `Config.swift`: reads optional update intervals from `UserDefaults`.
 - `Makefile`: development, install, uninstall, and cleanup tasks.
-
-## Build And Run
-
-- Use `make dev` for local iteration. It runs `swift build`, ad-hoc signs `.build/debug/mactop`, clears quarantine, then launches the debug binary.
-- Use `make build` to compile and sign the debug binary without launching it.
-- Do not run release builds unless specifically requested. The project instructions prohibit `cargo build --release`; this repo is Swift, but the same intent applies: avoid unnecessary release artifact churn.
-- `make install` builds release, installs to `~/.local/bin/mactop`, signs with `mactop.entitlements`, and registers a LaunchAgent.
 
 ## Profiling Procedure
 
@@ -149,6 +136,3 @@ Network top processes are intended to use the private `NetworkStatistics.framewo
 
 Network process reporting should not depend on `nettop`.
 
-## Editing Notes
-
-Keep changes small and local. This is a compact AppKit codebase without a formal design system or test suite. Prefer preserving existing direct style over adding abstractions. Useful comments that document non-obvious system APIs or private framework behavior should be updated, not removed.

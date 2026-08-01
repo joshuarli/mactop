@@ -159,16 +159,16 @@ final class PieChartView: NSView {
 final class LineChartView: NSView {
     var id: String = UUID().uuidString
 
-    private var points: [Double?]
-    private var nextPointIndex = 0
-    private var pointsAreFull = false
+    private var points: [HistoryPoint<Double>]
+    private var pointCapacity: Int
     private var color: NSColor
     private var cursor: NSPoint? = nil
     private var flipY = false
     private var fixedMax: Double?
 
     init(frame: NSRect = .zero, num: Int, color: NSColor = .controlAccentColor, fixedMax: Double? = nil) {
-        self.points = Array(repeating: nil, count: max(num, 1))
+        self.points = []
+        self.pointCapacity = max(num, 1)
         self.color = color
         self.fixedMax = fixedMax
         super.init(frame: frame)
@@ -186,9 +186,14 @@ final class LineChartView: NSView {
         let offset: CGFloat = 1 / (NSScreen.main?.backingScaleFactor ?? 1)
         let height = frame.height - offset
         let width = frame.width
-        let xRatio = width / CGFloat(points.count - 1)
-        let values = orderedPoints()
-        let maxValue = fixedMax ?? values.compactMap({ $0 }).max() ?? 1
+        let now = Date()
+        let windowStart = now.addingTimeInterval(-graphHistoryWindow)
+        let x = { (date: Date) in
+            CGFloat(max(0, min(graphHistoryWindow, date.timeIntervalSince(windowStart))) / graphHistoryWindow) * width
+        }
+        let expectedInterval = graphHistoryWindow / Double(pointCapacity)
+        let gapThreshold = max(expectedInterval * 2, 2)
+        let maxValue = fixedMax ?? points.map(\.value).max() ?? 1
 
         let lineColor = color
         let gradientColor = color.withAlphaComponent(0.5)
@@ -198,17 +203,24 @@ final class LineChartView: NSView {
         var line: [CGPoint] = []
         var allLines: [[CGPoint]] = []
         var list: [(value: Double, point: CGPoint)] = []
+        var previous: HistoryPoint<Double>?
 
-        for (i, v) in values.enumerated() {
-            guard let v else {
+        for point in points {
+            if let previous, point.date.timeIntervalSince(previous.date) > gapThreshold {
                 if !line.isEmpty { allLines.append(line); line = [] }
-                continue
+                let left = max(0, x(previous.date) + width * CGFloat(expectedInterval / graphHistoryWindow) / 2)
+                let right = min(width, x(point.date) - width * CGFloat(expectedInterval / graphHistoryWindow) / 2)
+                if right > left {
+                    NSColor.tertiaryLabelColor.withAlphaComponent(0.14).setFill()
+                    ctx.fill(CGRect(x: left, y: 0, width: right - left, height: height))
+                }
             }
-            let normalizedY = maxValue > 0 ? CGFloat(v / maxValue) * height : 0
+            let normalizedY = maxValue > 0 ? CGFloat(point.value / maxValue) * height : 0
             let y = flipY ? height - normalizedY : normalizedY
-            let pt = CGPoint(x: CGFloat(i) * xRatio, y: y)
+            let pt = CGPoint(x: x(point.date), y: y)
             line.append(pt)
-            list.append((value: v, point: pt))
+            list.append((value: point.value, point: pt))
+            previous = point
         }
         if !line.isEmpty { allLines.append(line) }
 
@@ -260,24 +272,13 @@ final class LineChartView: NSView {
     override func mouseExited(with event: NSEvent) { cursor = nil; needsDisplay = true }
 
     func addValue(_ v: Double) {
-        guard !points.isEmpty else { return }
-        points[nextPointIndex] = v
-        nextPointIndex = (nextPointIndex + 1) % points.count
-        if nextPointIndex == 0 { pointsAreFull = true }
+        points.append(HistoryPoint(date: Date(), value: v))
+        if points.count > pointCapacity { points.removeFirst(points.count - pointCapacity) }
         if window?.isVisible ?? false { display() }
     }
 
-    func setValues(_ values: [Double]) {
-        for index in points.indices {
-            points[index] = nil
-        }
-        nextPointIndex = 0
-        pointsAreFull = false
-        for value in values.suffix(points.count) {
-            points[nextPointIndex] = value
-            nextPointIndex = (nextPointIndex + 1) % points.count
-            if nextPointIndex == 0 { pointsAreFull = true }
-        }
+    func setValues(_ values: [HistoryPoint<Double>]) {
+        points = Array(values.suffix(pointCapacity))
         if window?.isVisible ?? false {
             display()
         } else {
@@ -289,22 +290,9 @@ final class LineChartView: NSView {
     func setFlipY(_ v: Bool) { flipY = v; needsDisplay = true }
 
     func reinit(_ num: Int = 60) {
-        guard points.count != num else { return }
-        let values = orderedPoints().compactMap { $0 }
-        points = Array(repeating: nil, count: max(num, 1))
-        nextPointIndex = 0
-        pointsAreFull = false
-        setValues(values)
+        pointCapacity = max(num, 1)
+        if points.count > pointCapacity { points = Array(points.suffix(pointCapacity)) }
         needsDisplay = true
-    }
-
-    private func orderedPoints() -> [Double?] {
-        guard !points.isEmpty else { return [] }
-        if pointsAreFull {
-            return Array(points[nextPointIndex..<points.count] + points[0..<nextPointIndex])
-        }
-        let prefixCount = points.count - nextPointIndex
-        return Array(repeating: nil, count: prefixCount) + points[0..<nextPointIndex]
     }
 }
 
@@ -398,8 +386,8 @@ final class ColumnChartView: NSView {
 final class NetworkChartView: NSView {
     private var inChart: LineChartView
     private var outChart: LineChartView
-    private var inValues: [Double] = []
-    private var outValues: [Double] = []
+    private var inValues: [HistoryPoint<Double>] = []
+    private var outValues: [HistoryPoint<Double>] = []
 
     init(frame: NSRect, num: Int, outColor: NSColor = .systemRed, inColor: NSColor = .systemBlue) {
         let h = max(frame.height, 2)
@@ -421,14 +409,14 @@ final class NetworkChartView: NSView {
         inChart.addValue(download)
     }
 
-    func setValues(_ values: [(up: Double, down: Double)]) {
+    func setValues(_ values: [HistoryPoint<(up: Double, down: Double)>]) {
         outValues.removeAll(keepingCapacity: true)
         inValues.removeAll(keepingCapacity: true)
         outValues.reserveCapacity(values.count)
         inValues.reserveCapacity(values.count)
         for value in values {
-            outValues.append(value.up)
-            inValues.append(value.down)
+            outValues.append(HistoryPoint(date: value.date, value: value.value.up))
+            inValues.append(HistoryPoint(date: value.date, value: value.value.down))
         }
         outChart.setValues(outValues)
         inChart.setValues(inValues)
@@ -450,7 +438,7 @@ final class NetworkChartView: NSView {
 // MARK: - StackedPowerChartView
 
 final class StackedPowerChartView: NSView {
-    private var samples: [PowerHistorySample] = []
+    private var samples: [HistoryPoint<PowerHistorySample>] = []
     private let cpuColor: NSColor
     private let gpuColor: NSColor
     private let aneColor: NSColor
@@ -459,7 +447,7 @@ final class StackedPowerChartView: NSView {
     private let displayColor: NSColor
     private let otherColor: NSColor
     private let systemColor: NSColor
-    private var lastSignature: (count: Int, last: PowerHistorySample)?
+    private var lastSignature: (count: Int, lastDate: Date?)?
 
     init(frame: NSRect, cpuColor: NSColor, gpuColor: NSColor, aneColor: NSColor, memoryColor: NSColor, mediaColor: NSColor, displayColor: NSColor, otherColor: NSColor, systemColor: NSColor) {
         self.cpuColor = cpuColor
@@ -477,55 +465,86 @@ final class StackedPowerChartView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        let values = samples
-        guard let ctx = NSGraphicsContext.current?.cgContext, values.count > 1 else { return }
+        guard let ctx = NSGraphicsContext.current?.cgContext, samples.count > 1 else { return }
 
         ctx.setShouldAntialias(true)
 
         let width = frame.width
         let height = frame.height
-        let xRatio = width / CGFloat(values.count - 1)
+        let now = Date()
+        let windowStart = now.addingTimeInterval(-graphHistoryWindow)
+        let x = { (date: Date) in
+            CGFloat(max(0, min(graphHistoryWindow, date.timeIntervalSince(windowStart))) / graphHistoryWindow) * width
+        }
+        let expectedInterval = zip(samples, samples.dropFirst())
+            .map { $1.date.timeIntervalSince($0.date) }
+            .filter { $0 > 0 }
+            .min() ?? 1
+        let gapThreshold = max(expectedInterval * 2, 2)
 
-        func drawBand(bottom: [Double], top: [Double], color: NSColor, scaleMax: Double, fillAlpha: CGFloat = 0.45, strokeAlpha: CGFloat = 1) {
+        for pair in zip(samples, samples.dropFirst()) {
+            guard pair.1.date.timeIntervalSince(pair.0.date) > gapThreshold else { continue }
+            let left = x(pair.0.date)
+            let right = x(pair.1.date)
+            guard right > left else { continue }
+            NSColor.tertiaryLabelColor.withAlphaComponent(0.14).setFill()
+            ctx.fill(CGRect(x: left, y: 0, width: right - left, height: height))
+        }
+
+        func drawBand(bottom: [HistoryPoint<Double>], top: [HistoryPoint<Double>], color: NSColor, scaleMax: Double, fillAlpha: CGFloat = 0.45, strokeAlpha: CGFloat = 1) {
             guard bottom.count == top.count, top.count > 1 else { return }
 
             func y(_ watts: Double) -> CGFloat {
                 CGFloat(watts / scaleMax) * height
             }
 
-            let path = NSBezierPath()
-            path.move(to: CGPoint(x: 0, y: y(top[0])))
-            for i in 1..<top.count {
-                path.line(to: CGPoint(x: CGFloat(i) * xRatio, y: y(top[i])))
-            }
-            for i in stride(from: bottom.count - 1, through: 0, by: -1) {
-                path.line(to: CGPoint(x: CGFloat(i) * xRatio, y: y(bottom[i])))
-            }
-            path.close()
+            var start = 0
+            while start < top.count {
+                var end = start + 1
+                while end < top.count && top[end].date.timeIntervalSince(top[end - 1].date) <= gapThreshold {
+                    end += 1
+                }
+                guard end - start > 1 else { start = end; continue }
 
-            color.withAlphaComponent(fillAlpha).setFill()
-            path.fill()
+                let path = NSBezierPath()
+                path.move(to: CGPoint(x: x(top[start].date), y: y(top[start].value)))
+                for index in (start + 1)..<end {
+                    path.line(to: CGPoint(x: x(top[index].date), y: y(top[index].value)))
+                }
+                for index in stride(from: end - 1, through: start, by: -1) {
+                    path.line(to: CGPoint(x: x(bottom[index].date), y: y(bottom[index].value)))
+                }
+                path.close()
 
-            let line = NSBezierPath()
-            line.move(to: CGPoint(x: 0, y: y(top[0])))
-            for i in 1..<top.count {
-                line.line(to: CGPoint(x: CGFloat(i) * xRatio, y: y(top[i])))
+                color.withAlphaComponent(fillAlpha).setFill()
+                path.fill()
+
+                let line = NSBezierPath()
+                line.move(to: CGPoint(x: x(top[start].date), y: y(top[start].value)))
+                for index in (start + 1)..<end {
+                    line.line(to: CGPoint(x: x(top[index].date), y: y(top[index].value)))
+                }
+                color.withAlphaComponent(strokeAlpha).setStroke()
+                line.lineWidth = 1 / (NSScreen.main?.backingScaleFactor ?? 1)
+                line.stroke()
+                start = end
             }
-            color.withAlphaComponent(strokeAlpha).setStroke()
-            line.lineWidth = 1 / (NSScreen.main?.backingScaleFactor ?? 1)
-            line.stroke()
         }
 
-        let cpuTop = values.map(\.cpu)
-        let gpuTop = values.map { $0.cpu + $0.gpu }
-        let aneTop = values.map { $0.cpu + $0.gpu + $0.ane }
-        let memoryTop = values.map { $0.cpu + $0.gpu + $0.ane + $0.memory }
-        let mediaTop = values.map { $0.cpu + $0.gpu + $0.ane + $0.memory + $0.media }
-        let displayTop = values.map { $0.cpu + $0.gpu + $0.ane + $0.memory + $0.media + $0.display }
-        let otherTop = values.map { $0.cpu + $0.gpu + $0.ane + $0.memory + $0.media + $0.display + $0.other }
-        let systemTop = values.map(\.total)
-        let zero = Array(repeating: 0.0, count: values.count)
-        let systemMax = max(systemTop.max() ?? 0, 1)
+        func series(_ value: (PowerHistorySample) -> Double) -> [HistoryPoint<Double>] {
+            samples.map { HistoryPoint(date: $0.date, value: value($0.value)) }
+        }
+
+        let cpuTop = series { $0.cpu }
+        let gpuTop = series { $0.cpu + $0.gpu }
+        let aneTop = series { $0.cpu + $0.gpu + $0.ane }
+        let memoryTop = series { $0.cpu + $0.gpu + $0.ane + $0.memory }
+        let mediaTop = series { $0.cpu + $0.gpu + $0.ane + $0.memory + $0.media }
+        let displayTop = series { $0.cpu + $0.gpu + $0.ane + $0.memory + $0.media + $0.display }
+        let otherTop = series { $0.cpu + $0.gpu + $0.ane + $0.memory + $0.media + $0.display + $0.other }
+        let systemTop = series { $0.total }
+        let zero = samples.map { HistoryPoint(date: $0.date, value: 0.0) }
+        let systemMax = max(systemTop.map(\.value).max() ?? 0, 1)
 
         drawBand(bottom: zero, top: systemTop, color: systemColor, scaleMax: systemMax, fillAlpha: 0.16, strokeAlpha: 0.55)
         drawBand(bottom: zero, top: cpuTop, color: cpuColor, scaleMax: systemMax)
@@ -537,7 +556,7 @@ final class StackedPowerChartView: NSView {
         drawBand(bottom: displayTop, top: otherTop, color: otherColor, scaleMax: systemMax)
     }
 
-    func setValues(_ values: [PowerHistorySample]) {
+    func setValues(_ values: [HistoryPoint<PowerHistorySample>]) {
         guard !values.isEmpty else {
             guard !samples.isEmpty || lastSignature != nil else { return }
             samples = []
@@ -546,8 +565,8 @@ final class StackedPowerChartView: NSView {
             return
         }
 
-        let signature = values.last.map { (count: values.count, last: $0) }
-        if let signature, let lastSignature, signature.count == lastSignature.count, signature.last == lastSignature.last {
+        let signature = (count: values.count, lastDate: values.last?.date)
+        if let lastSignature, signature.count == lastSignature.count, signature.lastDate == lastSignature.lastDate {
             return
         }
 

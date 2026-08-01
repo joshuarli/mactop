@@ -160,6 +160,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             name: NSWorkspace.didWakeNotification,
             object: nil
         )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(systemWillSleep),
+            name: NSWorkspace.willSleepNotification,
+            object: nil
+        )
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(togglePause),
@@ -203,7 +209,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func systemDidWake(_ notification: Notification) {
-        monitor.resetPowerData()
+        monitor.systemDidWake()
+    }
+
+    @objc private func systemWillSleep(_ notification: Notification) {
+        monitor.systemWillSleep()
     }
 
     @objc private func togglePause() {
@@ -420,6 +430,7 @@ final class SystemMonitor {
     private var netReadInFlight = false
     private var historyEnabled = Array(repeating: false, count: 5)
     private var isPaused = false
+    private var isSleeping = false
     private var dataEpoch = 0
 
     init(config: Config,
@@ -452,7 +463,7 @@ final class SystemMonitor {
                             onRAM: @escaping (RAMDetail) -> Void,
                             onGPU: @escaping (GPUDetail) -> Void,
                             onNet: @escaping (NetDetail) -> Void) {
-        guard !isPaused else { return }
+        guard !isPaused, !isSleeping else { return }
 
         let includeNetHistory = historyEnabled[0]
         let includeCPUHistory = historyEnabled[1]
@@ -567,9 +578,19 @@ final class SystemMonitor {
         }
     }
 
-    func resetPowerData() {
-        powerQueue.async { [weak self] in
-            self?.powerReader.clearData()
+    func systemWillSleep() {
+        coordinatorQueue.async { [weak self] in
+            self?.isSleeping = true
+        }
+    }
+
+    func systemDidWake() {
+        coordinatorQueue.async { [weak self] in
+            guard let self else { return }
+            self.isSleeping = false
+            self.powerQueue.async { [weak self] in
+                self?.powerReader.resetAfterWake()
+            }
         }
     }
 

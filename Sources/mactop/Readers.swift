@@ -3,8 +3,15 @@ import Foundation
 import IOKit
 import SystemConfiguration
 
-private let graphHistoryWindow: TimeInterval = 5 * 60
+let graphHistoryWindow: TimeInterval = 5 * 60
 private let graphSmoothingAlpha = 0.3
+
+// Keep real sample timestamps so charts can represent long unavailable spans
+// without allocating one placeholder entry for every missed update.
+struct HistoryPoint<Value> {
+    var date: Date
+    var value: Value
+}
 
 private func graphSampleCapacity(updateInterval: Double) -> Int {
     max(2, Int(ceil(graphHistoryWindow / max(updateInterval, 1))))
@@ -16,23 +23,20 @@ private func smoothedValue(_ value: Double, previous: Double?, alpha: Double = g
 }
 
 private struct ScalarHistory {
-    private var dates: [Date]
-    private var values: [Float]
+    private var values: [HistoryPoint<Double>]
     private var nextIndex = 0
     private var count = 0
     private var smoothed: Double?
 
     init(capacity: Int) {
         let capacity = max(capacity, 1)
-        dates = Array(repeating: .distantPast, count: capacity)
-        values = Array(repeating: 0, count: capacity)
+        values = Array(repeating: HistoryPoint(date: .distantPast, value: 0), count: capacity)
     }
 
     var capacity: Int { values.count }
 
     mutating func removeAll() {
-        dates = Array(repeating: .distantPast, count: values.count)
-        values = Array(repeating: 0, count: values.count)
+        values = Array(repeating: HistoryPoint(date: .distantPast, value: 0), count: values.count)
         nextIndex = 0
         count = 0
         smoothed = nil
@@ -41,22 +45,21 @@ private struct ScalarHistory {
     mutating func append(_ value: Double) {
         let value = smoothedValue(value, previous: smoothed)
         smoothed = value
-        dates[nextIndex] = Date()
-        values[nextIndex] = Float(value)
+        values[nextIndex] = HistoryPoint(date: Date(), value: value)
         nextIndex = (nextIndex + 1) % values.count
         count = min(count + 1, values.count)
     }
 
-    var orderedValues: [Double] {
+    var orderedValues: [HistoryPoint<Double>] {
         guard count > 0 else { return [] }
         let cutoff = Date().addingTimeInterval(-graphHistoryWindow)
-        var output: [Double] = []
+        var output: [HistoryPoint<Double>] = []
         output.reserveCapacity(count)
         let start = count == values.count ? nextIndex : 0
         for offset in 0..<count {
             let index = (start + offset) % values.count
-            if dates[index] >= cutoff {
-                output.append(Double(values[index]))
+            if values[index].date >= cutoff {
+                output.append(values[index])
             }
         }
         return output
@@ -64,9 +67,7 @@ private struct ScalarHistory {
 }
 
 private struct PairHistory {
-    private var dates: [Date]
-    private var upValues: [Float]
-    private var downValues: [Float]
+    private var values: [HistoryPoint<(up: Double, down: Double)>]
     private var nextIndex = 0
     private var count = 0
     private var smoothedUp: Double?
@@ -74,17 +75,13 @@ private struct PairHistory {
 
     init(capacity: Int) {
         let capacity = max(capacity, 1)
-        dates = Array(repeating: .distantPast, count: capacity)
-        upValues = Array(repeating: 0, count: capacity)
-        downValues = Array(repeating: 0, count: capacity)
+        values = Array(repeating: HistoryPoint(date: .distantPast, value: (up: 0, down: 0)), count: capacity)
     }
 
-    var capacity: Int { upValues.count }
+    var capacity: Int { values.count }
 
     mutating func removeAll() {
-        dates = Array(repeating: .distantPast, count: upValues.count)
-        upValues = Array(repeating: 0, count: upValues.count)
-        downValues = Array(repeating: 0, count: downValues.count)
+        values = Array(repeating: HistoryPoint(date: .distantPast, value: (up: 0, down: 0)), count: values.count)
         nextIndex = 0
         count = 0
         smoothedUp = nil
@@ -96,23 +93,21 @@ private struct PairHistory {
         let down = smoothedValue(down, previous: smoothedDown)
         smoothedUp = up
         smoothedDown = down
-        dates[nextIndex] = Date()
-        upValues[nextIndex] = Float(up)
-        downValues[nextIndex] = Float(down)
-        nextIndex = (nextIndex + 1) % upValues.count
-        count = min(count + 1, upValues.count)
+        values[nextIndex] = HistoryPoint(date: Date(), value: (up: up, down: down))
+        nextIndex = (nextIndex + 1) % values.count
+        count = min(count + 1, values.count)
     }
 
-    var orderedValues: [(up: Double, down: Double)] {
+    var orderedValues: [HistoryPoint<(up: Double, down: Double)>] {
         guard count > 0 else { return [] }
         let cutoff = Date().addingTimeInterval(-graphHistoryWindow)
-        var output: [(up: Double, down: Double)] = []
+        var output: [HistoryPoint<(up: Double, down: Double)>] = []
         output.reserveCapacity(count)
-        let start = count == upValues.count ? nextIndex : 0
+        let start = count == values.count ? nextIndex : 0
         for offset in 0..<count {
-            let index = (start + offset) % upValues.count
-            if dates[index] >= cutoff {
-                output.append((up: Double(upValues[index]), down: Double(downValues[index])))
+            let index = (start + offset) % values.count
+            if values[index].date >= cutoff {
+                output.append(values[index])
             }
         }
         return output
@@ -138,7 +133,7 @@ struct CPUDetail {
     var loadAvg5: Double
     var loadAvg15: Double
     var uptime: String
-    var history: [Double]
+    var history: [HistoryPoint<Double>]
     var historyCapacity: Int
 }
 
@@ -395,7 +390,7 @@ struct RAMDetail {
     var swapBytes: UInt64
     var totalBytes: UInt64
     var pressureLevel: Int   // 0=normal, 1=warn, 2=critical
-    var history: [Double]
+    var history: [HistoryPoint<Double>]
     var historyCapacity: Int
 }
 
@@ -500,9 +495,9 @@ struct GPUDetail {
     var render: Double
     var tiler: Double
     var model: String
-    var history: [Double]
-    var renderHistory: [Double]
-    var tilerHistory: [Double]
+    var history: [HistoryPoint<Double>]
+    var renderHistory: [HistoryPoint<Double>]
+    var tilerHistory: [HistoryPoint<Double>]
     var historyCapacity: Int
 }
 
@@ -628,7 +623,7 @@ struct PowerDetail {
     var media: Double?
     var display: Double?
     var other: Double?
-    var history: [PowerHistorySample]
+    var history: [HistoryPoint<PowerHistorySample>]
 }
 
 // Apple power telemetry and IOReport counters can briefly contain impossible
@@ -726,21 +721,18 @@ final class PowerReader {
     }
 
     private struct PowerHistory {
-        private var dates: [Date]
-        private var samples: [PowerHistorySample]
+        private var samples: [HistoryPoint<PowerHistorySample>]
         private var nextIndex = 0
         private var count = 0
         private var smoothed: PowerHistorySample?
 
         init(capacity: Int) {
             let capacity = max(capacity, 1)
-            dates = Array(repeating: .distantPast, count: capacity)
-            samples = Array(repeating: PowerHistorySample(total: 0, modeled: 0, cpu: 0, gpu: 0, ane: 0, memory: 0, media: 0, display: 0, other: 0), count: capacity)
+            samples = Array(repeating: HistoryPoint(date: .distantPast, value: PowerHistorySample(total: 0, modeled: 0, cpu: 0, gpu: 0, ane: 0, memory: 0, media: 0, display: 0, other: 0)), count: capacity)
         }
 
         mutating func removeAll() {
-            dates = Array(repeating: .distantPast, count: samples.count)
-            samples = Array(repeating: PowerHistorySample(total: 0, modeled: 0, cpu: 0, gpu: 0, ane: 0, memory: 0, media: 0, display: 0, other: 0), count: samples.count)
+            samples = Array(repeating: HistoryPoint(date: .distantPast, value: PowerHistorySample(total: 0, modeled: 0, cpu: 0, gpu: 0, ane: 0, memory: 0, media: 0, display: 0, other: 0)), count: samples.count)
             nextIndex = 0
             count = 0
             smoothed = nil
@@ -750,21 +742,20 @@ final class PowerReader {
             guard let rawHistorySample = sample.historySample else { return }
             let historySample = rawHistorySample.smoothed(after: smoothed)
             smoothed = historySample
-            dates[nextIndex] = date
-            samples[nextIndex] = historySample
+            samples[nextIndex] = HistoryPoint(date: date, value: historySample)
             nextIndex = (nextIndex + 1) % samples.count
             count = min(count + 1, samples.count)
         }
 
-        var values: [PowerHistorySample] {
+        var values: [HistoryPoint<PowerHistorySample>] {
             guard count > 0 else { return [] }
             let cutoff = Date().addingTimeInterval(-graphHistoryWindow)
-            var output: [PowerHistorySample] = []
+            var output: [HistoryPoint<PowerHistorySample>] = []
             output.reserveCapacity(count)
             let start = count == samples.count ? nextIndex : 0
             for offset in 0..<count {
                 let index = (start + offset) % samples.count
-                if dates[index] >= cutoff {
+                if samples[index].date >= cutoff {
                     output.append(samples[index])
                 }
             }
@@ -1174,6 +1165,11 @@ final class PowerReader {
 
     func clearData() {
         history.removeAll()
+        resetAfterWake()
+    }
+
+    func resetAfterWake() {
+        // Preserve history so the chart can show the sleep interval after wake.
         systemOverhead = nil
         lastRawSystem = nil
         current = nil
@@ -1276,7 +1272,7 @@ struct NetDetail {
     var publicIP: String?         // async-fetched; nil until available
     var transmitRate: Double      // Mbps from ifi_baudrate
     var isUp: Bool
-    var history: [(up: Double, down: Double)]
+    var history: [HistoryPoint<(up: Double, down: Double)>]
     var historyCapacity: Int
 }
 
