@@ -5,14 +5,14 @@ Source layout is intentionally split so agents can search by subsystem:
 - `Sources/mactop/Core/MetricHistory.swift`: shared metric history buffers and smoothing helpers used by readers and charts.
 - `Sources/mactop/Core/SystemMetricsCoordinator.swift`: interval scheduling and callback delivery for core readers.
 - `Sources/mactop/Core/Configuration/MactopConfig.swift`: optional update-interval configuration from `UserDefaults`.
-- `Sources/mactop/Core/CPU/CPUUsageReader.swift`: Mach CPU totals and per-core history via `CPUUsageReader.readCPUUsageDetail()`.
-- `Sources/mactop/Core/RAM/RAMUsageReader.swift`: Mach VM/RAM totals via `RAMUsageReader.readRAMUsageDetail()`.
-- `Sources/mactop/Core/GPU/GPUUsageReader.swift`: IOKit `IOAccelerator` statistics via `GPUUsageReader.readGPUUsageDetail()`.
-- `Sources/mactop/Core/Power/PowerTelemetryReader.swift`: AppleSmartBattery and private IOReport power telemetry via `PowerTelemetryReader.readPowerUsageDetail()`.
-- `Sources/mactop/Core/Network/NetworkInterfaceReader.swift`: interface counters and SystemConfiguration metadata via `NetworkInterfaceReader.readNetworkUsageDetail()`.
-- `Sources/mactop/Core/Processes/CPUProcessUsageReader.swift`: native/`ps` CPU process ranking via `CPUProcessUsageReader.readTopCPUProcessMetrics()`.
-- `Sources/mactop/Core/Processes/RAMProcessMemoryReader.swift`: per-process physical-footprint ranking via `RAMProcessMemoryReader.readTopRAMProcessMetrics()`.
-- `Sources/mactop/Core/Processes/NetworkProcessReader.swift`: private `NetworkStatistics.framework` process ranking via `NetworkProcessReader.readTopNetworkProcessMetrics()`.
+- `Sources/mactop/Core/CPU/CPUUsageReader.swift`: typed CPU totals and per-core history via `CPUUsageReader.readCPUUsageDetail()`; Mach ownership is in `Sources/mactop/Platform/MachCPUPlatform.swift`.
+- `Sources/mactop/Core/RAM/RAMUsageReader.swift`: typed RAM totals via `RAMUsageReader.readRAMUsageDetail()`; Mach VM ownership is in `Sources/mactop/Platform/MachRAMPlatform.swift`.
+- `Sources/mactop/Core/GPU/GPUUsageReader.swift`: typed GPU history via `GPUUsageReader.readGPUUsageDetail()`; IOAccelerator ownership is in `Sources/mactop/Platform/IOAcceleratorPlatform.swift`.
+- `Sources/mactop/Core/Power/PowerTelemetryReader.swift`: power reconciliation/history via `PowerTelemetryReader.readPowerUsageDetail()`; AppleSmartBattery and private IOReport ownership is in `Sources/mactop/Platform/PowerTelemetryPlatform.swift`.
+- `Sources/mactop/Core/Network/NetworkInterfaceReader.swift`: typed interface rates via `NetworkInterfaceReader.readNetworkUsageDetail()`; `getifaddrs`/SystemConfiguration ownership is in `Sources/mactop/Platform/NetworkInterfacePlatform.swift`.
+- `Sources/mactop/Core/Processes/CPUProcessUsageReader.swift`: native/`ps` CPU process ranking via `CPUProcessUsageReader.readTopCPUProcessMetrics()`; libproc ownership is in `Sources/mactop/Platform/ProcessPlatform.swift`.
+- `Sources/mactop/Core/Processes/RAMProcessMemoryReader.swift`: per-process physical-footprint ranking via `RAMProcessMemoryReader.readTopRAMProcessMetrics()`; libproc ownership is in `Sources/mactop/Platform/ProcessPlatform.swift`.
+- `Sources/mactop/Core/Processes/NetworkProcessReader.swift`: private `NetworkStatistics.framework` process ranking via `NetworkProcessReader.readTopNetworkProcessMetrics()`; callback ownership is in `Sources/mactop/Platform/NetworkStatisticsPlatform.swift`.
 - `Sources/mactop/Core/Processes/ProcessReaderSupport.swift`: `RankedProcessMetric`, process deltas, sorted insertion, and `ps` parsing.
 - `Sources/mactop/Core/Processes/ProcessDisplayName.swift`: process display-name and bundle-name resolution shared by CPU and RAM readers.
 - `Sources/mactop/UI/MactopApp.swift`: AppKit lifecycle, `NSStatusItem` registration, popup routing, and visible-process refreshes.
@@ -22,7 +22,8 @@ Source layout is intentionally split so agents can search by subsystem:
 - `Sources/mactopBench/main.swift`: headless per-subsystem CPU and memory benchmark used by `make bench`.
 - `Sources/mactop/Core/MetricReadPhaseRecorder.swift`: opt-in power/GPU phase timing used only by `mactopBench`.
 - `PERF.md`: deferred power/GPU optimization plan, current baseline, and post-migration validation criteria.
-- `Package.swift`: `mactopCore`, AppKit `mactop`, and headless `mactopBench` target boundaries.
+- `Package.swift`: `mactopPlatform`, unsafe platform boundary; `mactopCore`, typed AppKit-free readers; AppKit `mactop`; and headless `mactopBench` target boundaries.
+- `Tools/MactopLint`: standalone SwiftSyntax linter used by `make lint`; `make fmtlint` runs `swift-format` followed by the linter.
 - `Tests/mactopTests/ProcessReadersTests.swift`: process ranking, CPU delta, power validation, and `ps` parser tests.
 - `Makefile`: development, install, uninstall, and cleanup tasks.
 
@@ -104,7 +105,7 @@ GPU uses IOKit `IOAccelerator` performance statistics.
 Power uses two sources:
 
 **System power** (preferred menu-bar total on MacBooks):
-- `PowerTelemetryReader.BatteryPowerReader` reads `AppleSmartBattery` from IOKit.
+- `PlatformBatteryPowerReader` reads `AppleSmartBattery` from IOKit.
 - `PowerTelemetryData.SystemPowerIn` is preferred, falling back to `SystemCurrentIn * SystemVoltageIn`, `SystemLoad`, `BatteryPower`, then raw battery `Voltage * InstantAmperage`/`Amperage`.
 - This is intended to represent whole-machine input/draw and includes power outside the SoC: display panel/backlight, radios, storage, USB/Thunderbolt, PMIC/conversion losses, charging/battery behavior, fans where present, and other board rails.
 - `AppleSmartBattery` telemetry can update slowly or stay cached for seconds/minutes on AC/full battery. Keep a System-minus-modeled baseline from that source, then let the live modeled subtotal move within it so menu-bar System power responds to fast IOReport changes.
@@ -112,7 +113,7 @@ Power uses two sources:
 - Charging data also comes from `AppleSmartBattery`: `AdapterDetails.Watts` is the negotiated adapter maximum, `SystemPowerIn` is current system input, and `BatteryPower` is battery charge/discharge when available. The popup's Charging section should keep those concepts separate; do not label adapter max as live draw.
 
 **Modeled component power**:
-- `PowerTelemetryReader.ModeledPowerReader` dynamically loads private `IOReport` with `dlopen`, trying `/usr/lib/libIOReport.dylib`, `libIOReport.dylib`, the old private framework path, then `IOReport`. Do not link IOReport in `Package.swift`.
+- `PlatformModeledPowerReader` dynamically loads private `IOReport` with `dlopen`, trying `/usr/lib/libIOReport.dylib`, `libIOReport.dylib`, the old private framework path, then `IOReport`. Do not link IOReport in `Package.swift`.
 - It subscribes to `Energy Model` plus DCP/DCPEXT display-report groups, samples every 2 seconds, deltas counters with real elapsed time, and converts `mJ`/`uJ`/`nJ` to watts. Avoid `IOReportCopyAllChannels`; DCP `display stats` subgroup-only subscriptions can return zero deltas for `power`, so use the DCP group and filter to `display stats` while parsing.
 - Channel mapping: `GPU Energy` → GPU; names ending in `CPU Energy` → CPU; names starting with `ANE` → ANE; names starting with `DRAM`, `AMCC`, or `GPU SRAM` → Memory; DCP/DCPEXT `display stats` `power` deltas are preferred for Display, with Energy Model `DCS*` used only as a fallback; names starting with `AVE`, `ISP`, or `MSR` → Media; names containing `PCIe` or starting with `apciec` → Other SoC.
 - Avoid summing detailed CPU/GPU subrails such as `PACC*_CPU*`, `PCPUDTL*`, and similar detail channels into totals; they overlap with aggregate CPU/GPU energy channels and would double-count.
@@ -128,7 +129,7 @@ Network top processes are intended to use the private `NetworkStatistics.framewo
 Every private or undocumented Apple interface `mactop` touches, with the exact symbols/keys, the stability reasoning, and the degradation behavior when an interface changes. "Private" means Apple ships no stable public contract and can break it in any OS update; every use is deliberately scoped so a break degrades that one feature instead of crashing or corrupting data.
 
 **IOReport — modeled component power** (`Sources/mactop/Core/Power/PowerTelemetryReader.swift`):
-- Loaded with `dlopen` at first power read; never linked in `Package.swift`. Paths tried: `/usr/lib/libIOReport.dylib`, `libIOReport.dylib`, `/System/Library/PrivateFrameworks/IOReport.framework/IOReport`, `IOReport`. All symbols resolved with `dlsym`; any miss disables modeled power (`ModeledPowerReader` init returns nil) and PWR falls back to System-only.
+- Loaded with `dlopen` at first power read; never linked in `Package.swift`. Paths tried: `/usr/lib/libIOReport.dylib`, `libIOReport.dylib`, `/System/Library/PrivateFrameworks/IOReport.framework/IOReport`, `IOReport`. All symbols resolved with `dlsym`; any miss disables modeled power (`PlatformModeledPowerReader` init returns nil) and PWR falls back to System-only.
 - Symbols: `IOReportCopyChannelsInGroup`, `IOReportCreateSubscription`, `IOReportCreateSamples`, `IOReportCreateSamplesDelta`, `IOReportMergeChannels`, `IOReportChannelGetGroup`, `IOReportChannelGetSubGroup`, `IOReportChannelGetChannelName`, `IOReportChannelGetChannelID`, `IOReportChannelGetDriverID`, `IOReportChannelGetUnitLabel`, `IOReportSimpleGetIntegerValue`.
 - Channel addressing: a channel is `(driverID, channelID)`. The channel ID alone is **not** unique — e.g. PCIe ports and `apciec*` rails share the `"EngyPt0"` id (`0x456e677950727430`) and DCP/DCPEXT0/DCPEXT1 share `"IOMFBENG"` (`0x494f4d4642454e47`). The `ModeledPowerReader.channelCache` classification cache is keyed on both values for this reason.
 - Subscription filtering: `copyPowerChannels` keeps only the channels `classifyChannel` matches (see "Channel mapping" above), so the kernel samples ~18 channels instead of all 591 in the four groups. `channelCache` is built from that same filtered set; `parsePower` looks up delta channels by `(driverID, channelID)` and falls back to string classification if a getter ever changes, so a renamed channel degrades exactly as it did before filtering (silently ignored).
@@ -139,9 +140,9 @@ Every private or undocumented Apple interface `mactop` touches, with the exact s
 - Loaded with `dlopen("/System/Library/PrivateFrameworks/NetworkStatistics.framework/NetworkStatistics", RTLD_NOW)` lazily; the reader stays dormant until the network popup is visible so hidden idle pays nothing. Any `dlsym` miss or `dlopen` failure leaves network process ranking empty.
 - Symbols: `NStatManagerCreate`, `NStatManagerSetFlags`, `NStatManagerAddAllTCPWithFilter`, `NStatManagerAddAllUDPWithFilter`, `NStatSourceSetDescriptionBlock`, `NStatSourceSetCountsBlock`, `NStatSourceSetRemovedBlock`, `NStatSourceQueryDescription`, `NStatManagerQueryAllSourcesUpdate`, and string keys `kNStatSrcKeyPID`, `kNStatSrcKeyProcessName`, `kNStatSrcKeyRxBytes`, `kNStatSrcKeyTxBytes`.
 - Callback ABI: description and count callbacks can fire separately for the same source and count callbacks may omit PID/name, so per-source state merges both dictionaries by source pointer. Add-source APIs can return positive values on success (do not treat as error).
-- Stability: this is the same private ABI `nettop` uses and may change across macOS releases; the block-based merge logic in `NativeReader.updateNetworkSourceStatistics` is the fragile part to re-check when a new macOS ships.
+- Stability: this is the same private ABI `nettop` uses and may change across macOS releases; the block-based merge logic in `NetworkStatisticsPlatform.update` is the fragile part to re-check when a new macOS ships.
 
-**AppleSmartBattery IOKit — System power and charging** (`PowerTelemetryReader.BatteryPowerReader`):
+**AppleSmartBattery IOKit — System power and charging** (`PlatformBatteryPowerReader`):
 - Public-ish IOKit service, but the dictionary keys are undocumented. Any lookup is via `[String: Any]` bridging, so an absent key just yields `nil` and the next fallback runs.
 - Keys: `PowerTelemetryData` (with `SystemPowerIn`, `SystemCurrentIn`, `SystemVoltageIn`, `SystemLoad`, `BatteryPower`, `WallEnergyEstimate`, `SystemEnergyConsumed`), `AdapterDetails`/`AppleRawAdapterDetails` (`Name`, `Watts`), `ExternalConnected`/`AppleRawExternalConnected`, `IsCharging`, `FullyCharged`, `CurrentCapacity`/`AppleRawCurrentCapacity`, `MaxCapacity`/`AppleRawMaxCapacity`, `Voltage`/`AppleRawBatteryVoltage`, `InstantAmperage`, `Amperage`.
 - The `systemWatts` fallback chain (`SystemPowerIn` → `SystemCurrentIn * SystemVoltageIn` → `SystemLoad` → `BatteryPower` → `Voltage * Amperage`) makes individual key changes degrade gracefully. On desktops the whole source may be unavailable; PWR falls back to modeled power.
