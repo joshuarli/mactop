@@ -1,6 +1,6 @@
 # Performance Plan
 
-This document records the next performance work for `mactop`. The work is intentionally deferred until the project migrates to **macOS 26.5.2 or newer** and **Swift 6.3.3 or newer**. Do not begin the optimization work below before that migration unless a production regression requires it.
+This document records the next performance work for `mactop`. The project has migrated to **macOS 26.5.2** and **Swift 6.3.3** (commit 8a4df3e), so the deferred optimizations below are unblocked. The power optimization is complete; GPU is the remaining work.
 
 ## Current Baseline
 
@@ -19,7 +19,7 @@ Representative diagnostic run:
 | CPU | 0.35 ms | 0.070 ms | 0 | 80 B |
 | RAM | 0.14 ms | 0.029 ms | 0 | 16 B |
 | GPU | 13.30 ms | 2.660 ms | 0 | 16 B |
-| Power | 32.40 ms | 6.480 ms | 0 | 0 B |
+| Power | 11.33 ms | 2.266 ms | 0 | 16 B |
 | Network | 0.36 ms | 0.072 ms | 0 | 16 B |
 
 The diagnostic phase recorder adds small timing and dictionary overhead, so phase values are for ranking bottlenecks, not for exact production CPU accounting. The normal app path leaves the recorder disabled.
@@ -28,22 +28,24 @@ The diagnostic phase recorder adds small timing and dictionary overhead, so phas
 
 The phase timings are recorded by `CoreReadPhaseRecorder` in `Sources/mactop/Core/MetricReadPhaseRecorder.swift` and attached to `PowerTelemetryReader` in `Sources/mactop/Core/Power/PowerTelemetryReader.swift`.
 
-Representative steady-state power phases over five ticks:
+The subscription filtering optimization (below) cut power from ~31.0 ms CPU total / 6.20 ms per tick to ~11.3 ms / 2.27 ms per tick, and the ID-cache parse cut `io_report.parse` from ~1.24 ms per tick to ~0.02 ms. The remaining cost is dominated by the fixed DCP display-power sample floor (~1.1 ms kernel round trip + ~1.2 ms DCP inherent, regardless of channel count). `io_report.sample` wall time varies run to run (2.9–3.4 ms per tick); `cpu_ms/tick` is the stable comparison metric.
+
+Representative steady-state power phases over five ticks after the optimization:
 
 | Phase | Total wall time | Per tick |
 | --- | ---: | ---: |
-| `io_report.sample` | 23.60 ms | 4.72 ms |
-| `io_report.parse` | 6.37 ms | 1.27 ms |
-| `io_report.delta` | 4.85 ms | 0.97 ms |
-| `battery.read` | 1.92 ms | 0.38 ms |
-| `history.append` + `history.snapshot` | 0.04 ms | 0.01 ms |
+| `io_report.sample` | 14.5–17.0 ms | 2.9–3.4 ms |
+| `io_report.parse` | 0.11 ms | 0.02 ms |
+| `io_report.delta` | 0.16 ms | 0.03 ms |
+| `battery.read` | 0.82 ms | 0.16 ms |
+| `history.append` + `history.snapshot` | 0.06 ms | 0.01 ms |
 
-### Power optimization order
+### Power optimization status
 
-1. **Investigate IOReport sampling cost.** The `api.createSamples(...)` call in `PowerTelemetryReader.ModeledPowerReader.rawSample()` is the dominant phase. Check whether macOS 26.5.2/IOReport provides a lighter sample path, a reusable sample object, or a safe lower-frequency cadence.
-2. **Reduce channel parsing work.** `PowerTelemetryReader.ModeledPowerReader.parsePower()` repeatedly converts group, subgroup, channel, and unit values to Swift strings for every channel. Cache stable channel classification and unit metadata where the private ABI makes that safe.
-3. **Preserve dynamic channel matching.** Any cache must continue to support Apple changing channel names, DCP/DCPEXT display groups, and the existing aggregate-versus-detail-channel exclusions. Validate with `MACTOP_DEBUG_POWER=1` after every channel-parser change.
-4. **Leave history and battery work alone initially.** Their measured cost is too small to justify complexity before the IOReport path is addressed.
+1. **Investigate IOReport sampling cost.** Done. The old subscription included all 591 channels in the `Energy Model` (162), `DCP` (143), `DCPEXT0` (143), and `DCPEXT1` (143) groups; only ~18 matched `classifyChannel`. `copyPowerChannels` now filters the subscription to the classified set, so the kernel samples ~18 channels instead of 591, cutting `io_report.sample` from ~4.7 ms per tick to ~2.9 ms.
+2. **Reduce channel parsing work.** Done. `buildChannelCache` precomputes bucket and unit divisor per channel keyed on `(driverID, channelID)`, and `classifiedChannel`/`parsePower` use that cache with a string-classification fallback. `io_report.parse` dropped from ~1.27 ms per tick to ~0.02 ms. The cache never reorders channels; a renamed channel silently falls back to the old string path.
+3. **Preserve dynamic channel matching.** The filtered set is derived from the same `classifyChannel` rule the parser uses, DCPEXT display-power channels are deliberately kept (pruning them saves no sample time — 1 or 3 DCP channels cost the same), and the cache keeps the string fallback. Validate with `MACTOP_DEBUG_POWER=1` after every channel-parser change or macOS/chip update.
+4. **Leave history and battery work alone.** Confirmed: combined cost is ~0.17 ms per tick, not worth complexity.
 
 ## GPU Bottlenecks
 

@@ -158,6 +158,63 @@ public final class PowerTelemetryReader: @unchecked Sendable {
     }
 
     private final class ModeledPowerReader {
+        // Buckets mirror the aggregate-versus-detail-channel rules the parser
+        // applies to Energy Model and DCP groups. Both subscription filtering and
+        // parsePower use these so a renamed channel is treated the same way.
+        private enum ModeledBucket {
+            case cpu
+            case gpu
+            case ane
+            case memory
+            case media
+            case dcsDisplay
+            case dcpDisplay
+            case other
+        }
+
+        private static func classifyChannel(group: String, subgroup: String, name: String) -> ModeledBucket? {
+            if group == "Energy Model" {
+                switch name {
+                case "GPU Energy":
+                    return .gpu
+                case let name where name.hasSuffix("CPU Energy"):
+                    return .cpu
+                case let name where name.hasPrefix("ANE"):
+                    return .ane
+                case let name where name.hasPrefix("DRAM") || name.hasPrefix("AMCC") || name.hasPrefix("GPU SRAM"):
+                    return .memory
+                case let name where name.hasPrefix("DCS"):
+                    return .dcsDisplay
+                case let name where name.hasPrefix("AVE") || name.hasPrefix("ISP") || name.hasPrefix("MSR"):
+                    return .media
+                case let name where name.contains("PCIe") || name.hasPrefix("apciec"):
+                    return .other
+                default:
+                    return nil
+                }
+            }
+            if group.hasPrefix("DCP"), subgroup == "display stats", name == "power" {
+                return .dcpDisplay
+            }
+            return nil
+        }
+
+        // A channel is addressed by its provider (driver) plus channel id. The id
+        // alone is not unique: PCIe ports and apciec rails share the "EngyPt0" id
+        // and DCP/DCPEXT display controllers share the "IOMFBENG" id, so the
+        // classification cache must key on both values.
+        private struct ChannelKey: Hashable {
+            let driverID: UInt64
+            let channelID: UInt64
+        }
+
+        private struct ChannelEntry {
+            let bucket: ModeledBucket
+            // Energy-unit raw value divisor, e.g. 1_000 for mJ. nil for DCP
+            // display power, which is interpreted as microwatt-seconds directly.
+            let rawUnitDivisor: Double?
+        }
+
         private struct IOReportAPI {
             typealias CopyChannelsInGroup = @convention(c) (UnsafeRawPointer?, UnsafeRawPointer?, UInt64, UInt64, UInt64) -> UnsafeRawPointer?
             typealias CreateSubscription = @convention(c) (UnsafeRawPointer?, UnsafeRawPointer?, UnsafeMutablePointer<UnsafeRawPointer?>?, UInt64, UnsafeRawPointer?) -> UnsafeRawPointer?
@@ -165,6 +222,7 @@ public final class PowerTelemetryReader: @unchecked Sendable {
             typealias CreateSamplesDelta = @convention(c) (UnsafeRawPointer?, UnsafeRawPointer?, UnsafeRawPointer?) -> UnsafeRawPointer?
             typealias MergeChannels = @convention(c) (UnsafeRawPointer?, UnsafeRawPointer?, UnsafeRawPointer?) -> Void
             typealias ChannelString = @convention(c) (UnsafeRawPointer?) -> UnsafeRawPointer?
+            typealias ChannelID = @convention(c) (UnsafeRawPointer?) -> UInt64
             typealias SimpleIntegerValue = @convention(c) (UnsafeRawPointer?, Int32) -> Int64
 
             var handle: UnsafeMutableRawPointer
@@ -176,6 +234,8 @@ public final class PowerTelemetryReader: @unchecked Sendable {
             var channelGetGroup: ChannelString
             var channelGetSubGroup: ChannelString
             var channelGetChannelName: ChannelString
+            var channelGetChannelID: ChannelID
+            var channelGetDriverID: ChannelID
             var channelGetUnitLabel: ChannelString
             var simpleGetIntegerValue: SimpleIntegerValue
         }
@@ -183,6 +243,7 @@ public final class PowerTelemetryReader: @unchecked Sendable {
         private let api: IOReportAPI
         private let channels: CFMutableDictionary
         private let subscription: UnsafeRawPointer
+        private let channelCache: [ChannelKey: ChannelEntry]
         private let debugEnabled = ProcessInfo.processInfo.environment["MACTOP_DEBUG_POWER"] == "1"
         private var didLogDebug = false
         private var previousSample: (sample: CFDictionary, time: Date)?
@@ -202,6 +263,7 @@ public final class PowerTelemetryReader: @unchecked Sendable {
             self.api = api
             self.channels = channels
             self.subscription = subscription
+            self.channelCache = Self.buildChannelCache(api: api, channels: channels)
         }
 
         deinit {
@@ -268,47 +330,47 @@ public final class PowerTelemetryReader: @unchecked Sendable {
             for i in 0..<count {
                 guard let item = CFArrayGetValueAtIndex(array, i) else { continue }
 
-                let group = cfString(api.channelGetGroup(item))
-                let subgroup = cfString(api.channelGetSubGroup(item))
-                let channel = cfString(api.channelGetChannelName(item))
-                let unit = cfString(api.channelGetUnitLabel(item)).trimmingCharacters(in: .whitespacesAndNewlines)
+                let key = ChannelKey(driverID: api.channelGetDriverID(item), channelID: api.channelGetChannelID(item))
+                let classified = classifiedChannel(item: item, key: key)
+                guard let bucket = classified.bucket else { continue }
 
-                if group == "Energy Model" {
-                    guard let watts = watts(item: item, unit: unit, elapsed: elapsed) else { continue }
-                    switch channel {
-                    case "GPU Energy":
-                        gpu += watts
-                        found = true
-                    case let name where name.hasSuffix("CPU Energy"):
-                        cpu += watts
-                        found = true
-                    case let name where name.hasPrefix("ANE"):
-                        ane += watts
-                        found = true
-                    case let name where name.hasPrefix("DRAM") || name.hasPrefix("AMCC") || name.hasPrefix("GPU SRAM"):
-                        memory += watts
-                        found = true
-                    case let name where name.hasPrefix("DCS"):
-                        energyDisplay += watts
-                        found = true
-                    case let name where name.hasPrefix("AVE") || name.hasPrefix("ISP") || name.hasPrefix("MSR"):
-                        media += watts
-                        found = true
-                    case let name where name.contains("PCIe") || name.hasPrefix("apciec"):
-                        other += watts
-                        found = true
-                    default:
-                        continue
-                    }
-                    if debugEnabled {
-                        debugRows.append(String(format: "Energy Model/%@: %.3f W", channel, watts))
-                    }
-                } else if group.hasPrefix("DCP"), subgroup == "display stats", channel == "power" {
-                    guard let watts = microwattSecondsToWatts(api.simpleGetIntegerValue(item, 0), elapsed: elapsed) else { continue }
+                let watts: Double?
+                if bucket == .dcpDisplay {
+                    watts = microwattSecondsToWatts(api.simpleGetIntegerValue(item, 0), elapsed: elapsed)
+                } else if let divisor = classified.rawUnitDivisor {
+                    watts = rawJoulesToWatts(api.simpleGetIntegerValue(item, 0), divisor: divisor, elapsed: elapsed)
+                } else {
+                    watts = nil
+                }
+                guard let watts else { continue }
+
+                switch bucket {
+                case .cpu:
+                    cpu += watts
+                case .gpu:
+                    gpu += watts
+                case .ane:
+                    ane += watts
+                case .memory:
+                    memory += watts
+                case .media:
+                    media += watts
+                case .dcsDisplay:
+                    energyDisplay += watts
+                case .other:
+                    other += watts
+                case .dcpDisplay:
                     dcpDisplay += watts
-                    found = true
-                    if debugEnabled {
+                }
+                found = true
+                if debugEnabled {
+                    let group = Self.cfString(api.channelGetGroup(item))
+                    let subgroup = Self.cfString(api.channelGetSubGroup(item))
+                    let channel = Self.cfString(api.channelGetChannelName(item))
+                    if bucket == .dcpDisplay {
                         debugRows.append(String(format: "%@/%@/%@: %.3f W", group, subgroup, channel, watts))
+                    } else {
+                        debugRows.append(String(format: "Energy Model/%@: %.3f W", channel, watts))
                     }
                 }
             }
@@ -324,23 +386,31 @@ public final class PowerTelemetryReader: @unchecked Sendable {
             return PowerSample(cpu: cpu, gpu: gpu, ane: ane, memory: memory, media: media, display: display, other: other, system: nil, hasModeled: true)
         }
 
-        private func watts(item: UnsafeRawPointer, unit: String, elapsed: TimeInterval) -> Double? {
-            let value = Double(api.simpleGetIntegerValue(item, 0))
-            let joules: Double
-            switch unit {
-            case "mJ": joules = value / 1_000
-            case "uJ": joules = value / 1_000_000
-            case "nJ": joules = value / 1_000_000_000
-            default: return nil
+        // Resolves a delta channel to its bucket and unit divisor. The cache is
+        // keyed on provider and channel id and is always hit because the delta
+        // contains exactly the subscribed channels. The string fallback keeps
+        // modeled power working if a getter changes across a macOS update.
+        private func classifiedChannel(item: UnsafeRawPointer, key: ChannelKey) -> (bucket: ModeledBucket?, rawUnitDivisor: Double?) {
+            if let entry = channelCache[key] {
+                return (entry.bucket, entry.rawUnitDivisor)
             }
-            return validatedPowerReadingWatts(joules / elapsed)
+            let group = Self.cfString(api.channelGetGroup(item))
+            let subgroup = Self.cfString(api.channelGetSubGroup(item))
+            let channel = Self.cfString(api.channelGetChannelName(item))
+            guard let bucket = Self.classifyChannel(group: group, subgroup: subgroup, name: channel) else { return (nil, nil) }
+            let unit = Self.cfString(api.channelGetUnitLabel(item)).trimmingCharacters(in: .whitespacesAndNewlines)
+            return (bucket, Self.rawUnitDivisor(unitLabel: unit))
+        }
+
+        private func rawJoulesToWatts(_ value: Int64, divisor: Double, elapsed: TimeInterval) -> Double? {
+            validatedPowerReadingWatts(Double(value) / divisor / elapsed)
         }
 
         private func microwattSecondsToWatts(_ value: Int64, elapsed: TimeInterval) -> Double? {
             validatedPowerReadingWatts(Double(value) / 1_000_000 / elapsed)
         }
 
-        private func cfString(_ pointer: UnsafeRawPointer?) -> String {
+        private static func cfString(_ pointer: UnsafeRawPointer?) -> String {
             guard let pointer else { return "" }
             return Unmanaged<CFString>.fromOpaque(pointer).takeUnretainedValue() as String
         }
@@ -363,6 +433,8 @@ public final class PowerTelemetryReader: @unchecked Sendable {
                   let channelGetGroup = symbol(handle, "IOReportChannelGetGroup", as: IOReportAPI.ChannelString.self),
                   let channelGetSubGroup = symbol(handle, "IOReportChannelGetSubGroup", as: IOReportAPI.ChannelString.self),
                   let channelGetChannelName = symbol(handle, "IOReportChannelGetChannelName", as: IOReportAPI.ChannelString.self),
+                  let channelGetChannelID = symbol(handle, "IOReportChannelGetChannelID", as: IOReportAPI.ChannelID.self),
+                  let channelGetDriverID = symbol(handle, "IOReportChannelGetDriverID", as: IOReportAPI.ChannelID.self),
                   let channelGetUnitLabel = symbol(handle, "IOReportChannelGetUnitLabel", as: IOReportAPI.ChannelString.self),
                   let simpleGetIntegerValue = symbol(handle, "IOReportSimpleGetIntegerValue", as: IOReportAPI.SimpleIntegerValue.self) else {
                 dlclose(handle)
@@ -379,6 +451,8 @@ public final class PowerTelemetryReader: @unchecked Sendable {
                 channelGetGroup: channelGetGroup,
                 channelGetSubGroup: channelGetSubGroup,
                 channelGetChannelName: channelGetChannelName,
+                channelGetChannelID: channelGetChannelID,
+                channelGetDriverID: channelGetDriverID,
                 channelGetUnitLabel: channelGetUnitLabel,
                 simpleGetIntegerValue: simpleGetIntegerValue
             )
@@ -415,8 +489,73 @@ public final class PowerTelemetryReader: @unchecked Sendable {
             }
 
             let key = "IOReportChannels" as CFString
-            guard CFDictionaryGetValue(channels, Unmanaged.passUnretained(key).toOpaque()) != nil else { return nil }
+            guard let arrayPtr = CFDictionaryGetValue(channels, Unmanaged.passUnretained(key).toOpaque()) else { return nil }
+            let array = Unmanaged<CFArray>.fromOpaque(arrayPtr).takeUnretainedValue()
+            let count = CFArrayGetCount(array)
+
+            // Sampling every channel in the Energy Model and DCP groups is the
+            // dominant modeled-power cost. Subscribe only to channels the parser
+            // classifies so the kernel samples and the per-tick parse both see a
+            // small fixed set. classifyChannel is the same rule parsePower uses, so
+            // a renamed channel is ignored exactly as it was before filtering.
+            var kept: [UnsafeRawPointer?] = []
+            kept.reserveCapacity(count)
+            for i in 0..<count {
+                guard let item = CFArrayGetValueAtIndex(array, i) else { continue }
+                let group = cfString(api.channelGetGroup(item))
+                let subgroup = cfString(api.channelGetSubGroup(item))
+                let name = cfString(api.channelGetChannelName(item))
+                if classifyChannel(group: group, subgroup: subgroup, name: name) != nil {
+                    kept.append(item)
+                }
+            }
+            guard !kept.isEmpty else { return nil }
+
+            var callbacks = kCFTypeArrayCallBacks
+            guard let filteredArray = kept.withUnsafeMutableBufferPointer({ buffer in
+                CFArrayCreate(kCFAllocatorDefault, buffer.baseAddress, buffer.count, &callbacks)
+            }) else { return nil }
+            CFDictionarySetValue(channels, Unmanaged.passUnretained(key).toOpaque(), Unmanaged.passUnretained(filteredArray).toOpaque())
             return channels
+        }
+
+        // Precomputes the per-channel bucket and unit divisor so parsePower avoids
+        // bridging group/subgroup/channel/unit strings on every tick. The cache is
+        // built from the same filtered channel set the subscription uses, so delta
+        // channels always hit it.
+        private static func buildChannelCache(api: IOReportAPI, channels: CFMutableDictionary) -> [ChannelKey: ChannelEntry] {
+            let key = "IOReportChannels" as CFString
+            guard let arrayPtr = CFDictionaryGetValue(channels, Unmanaged.passUnretained(key).toOpaque()) else { return [:] }
+            let array = Unmanaged<CFArray>.fromOpaque(arrayPtr).takeUnretainedValue()
+            let count = CFArrayGetCount(array)
+            var cache: [ChannelKey: ChannelEntry] = [:]
+            cache.reserveCapacity(count)
+            for i in 0..<count {
+                guard let item = CFArrayGetValueAtIndex(array, i) else { continue }
+                let group = Self.cfString(api.channelGetGroup(item))
+                let subgroup = Self.cfString(api.channelGetSubGroup(item))
+                let channel = Self.cfString(api.channelGetChannelName(item))
+                guard let bucket = classifyChannel(group: group, subgroup: subgroup, name: channel) else { continue }
+                let divisor: Double?
+                if bucket == .dcpDisplay {
+                    divisor = nil
+                } else {
+                    let unit = Self.cfString(api.channelGetUnitLabel(item)).trimmingCharacters(in: .whitespacesAndNewlines)
+                    divisor = rawUnitDivisor(unitLabel: unit)
+                }
+                let key = ChannelKey(driverID: api.channelGetDriverID(item), channelID: api.channelGetChannelID(item))
+                cache[key] = ChannelEntry(bucket: bucket, rawUnitDivisor: divisor)
+            }
+            return cache
+        }
+
+        private static func rawUnitDivisor(unitLabel: String) -> Double? {
+            switch unitLabel {
+            case "mJ": return 1_000
+            case "uJ": return 1_000_000
+            case "nJ": return 1_000_000_000
+            default: return nil
+            }
         }
     }
 

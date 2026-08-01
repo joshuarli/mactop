@@ -123,6 +123,43 @@ Network interface totals use `getifaddrs` and sum `en*` interface byte counters.
 
 Network top processes are intended to use the private `NetworkStatistics.framework` in-process. This is the same underlying data source used by `nettop`, but it is a private Apple ABI and may change across macOS releases.
 
+## Private ABI Inventory
+
+Every private or undocumented Apple interface `mactop` touches, with the exact symbols/keys, the stability reasoning, and the degradation behavior when an interface changes. "Private" means Apple ships no stable public contract and can break it in any OS update; every use is deliberately scoped so a break degrades that one feature instead of crashing or corrupting data.
+
+**IOReport — modeled component power** (`Sources/mactop/Core/Power/PowerTelemetryReader.swift`):
+- Loaded with `dlopen` at first power read; never linked in `Package.swift`. Paths tried: `/usr/lib/libIOReport.dylib`, `libIOReport.dylib`, `/System/Library/PrivateFrameworks/IOReport.framework/IOReport`, `IOReport`. All symbols resolved with `dlsym`; any miss disables modeled power (`ModeledPowerReader` init returns nil) and PWR falls back to System-only.
+- Symbols: `IOReportCopyChannelsInGroup`, `IOReportCreateSubscription`, `IOReportCreateSamples`, `IOReportCreateSamplesDelta`, `IOReportMergeChannels`, `IOReportChannelGetGroup`, `IOReportChannelGetSubGroup`, `IOReportChannelGetChannelName`, `IOReportChannelGetChannelID`, `IOReportChannelGetDriverID`, `IOReportChannelGetUnitLabel`, `IOReportSimpleGetIntegerValue`.
+- Channel addressing: a channel is `(driverID, channelID)`. The channel ID alone is **not** unique — e.g. PCIe ports and `apciec*` rails share the `"EngyPt0"` id (`0x456e677950727430`) and DCP/DCPEXT0/DCPEXT1 share `"IOMFBENG"` (`0x494f4d4642454e47`). The `ModeledPowerReader.channelCache` classification cache is keyed on both values for this reason.
+- Subscription filtering: `copyPowerChannels` keeps only the channels `classifyChannel` matches (see "Channel mapping" above), so the kernel samples ~18 channels instead of all 591 in the four groups. `channelCache` is built from that same filtered set; `parsePower` looks up delta channels by `(driverID, channelID)` and falls back to string classification if a getter ever changes, so a renamed channel degrades exactly as it did before filtering (silently ignored).
+- Stability: these symbols and the Energy Model/DCP group structure have been stable across the recent macOS releases; channel IDs encode channel names, and provider IDs are IOKit registry entry IDs, so both are stable per boot and per macOS/chip. Apple changing a channel name is expected and handled by `classifyChannel`. Validate after any OS or chip change with `MACTOP_DEBUG_POWER=1`.
+- Measured cost: sampling the filtered set is ~2.9 ms/tick, of which a fixed ~1.1 ms is the kernel round trip and ~1.2 ms is inherent to sampling any DCP display-power channel (1 or 3 channels cost the same).
+
+**NetworkStatistics.framework — per-process network bytes** (`Sources/mactop/Core/Processes/NetworkProcessReader.swift`):
+- Loaded with `dlopen("/System/Library/PrivateFrameworks/NetworkStatistics.framework/NetworkStatistics", RTLD_NOW)` lazily; the reader stays dormant until the network popup is visible so hidden idle pays nothing. Any `dlsym` miss or `dlopen` failure leaves network process ranking empty.
+- Symbols: `NStatManagerCreate`, `NStatManagerSetFlags`, `NStatManagerAddAllTCPWithFilter`, `NStatManagerAddAllUDPWithFilter`, `NStatSourceSetDescriptionBlock`, `NStatSourceSetCountsBlock`, `NStatSourceSetRemovedBlock`, `NStatSourceQueryDescription`, `NStatManagerQueryAllSourcesUpdate`, and string keys `kNStatSrcKeyPID`, `kNStatSrcKeyProcessName`, `kNStatSrcKeyRxBytes`, `kNStatSrcKeyTxBytes`.
+- Callback ABI: description and count callbacks can fire separately for the same source and count callbacks may omit PID/name, so per-source state merges both dictionaries by source pointer. Add-source APIs can return positive values on success (do not treat as error).
+- Stability: this is the same private ABI `nettop` uses and may change across macOS releases; the block-based merge logic in `NativeReader.updateNetworkSourceStatistics` is the fragile part to re-check when a new macOS ships.
+
+**AppleSmartBattery IOKit — System power and charging** (`PowerTelemetryReader.BatteryPowerReader`):
+- Public-ish IOKit service, but the dictionary keys are undocumented. Any lookup is via `[String: Any]` bridging, so an absent key just yields `nil` and the next fallback runs.
+- Keys: `PowerTelemetryData` (with `SystemPowerIn`, `SystemCurrentIn`, `SystemVoltageIn`, `SystemLoad`, `BatteryPower`, `WallEnergyEstimate`, `SystemEnergyConsumed`), `AdapterDetails`/`AppleRawAdapterDetails` (`Name`, `Watts`), `ExternalConnected`/`AppleRawExternalConnected`, `IsCharging`, `FullyCharged`, `CurrentCapacity`/`AppleRawCurrentCapacity`, `MaxCapacity`/`AppleRawMaxCapacity`, `Voltage`/`AppleRawBatteryVoltage`, `InstantAmperage`, `Amperage`.
+- The `systemWatts` fallback chain (`SystemPowerIn` → `SystemCurrentIn * SystemVoltageIn` → `SystemLoad` → `BatteryPower` → `Voltage * Amperage`) makes individual key changes degrade gracefully. On desktops the whole source may be unavailable; PWR falls back to modeled power.
+- Validate key coverage with `MACTOP_DEBUG_BATTERY=1`.
+
+**IOAccelerator IOKit + PerformanceStatistics — GPU** (`Sources/mactop/Core/GPU/GPUUsageReader.swift`):
+- Matches `IOAccelerator` services via `IOServiceGetMatchingServices`, then reads `PerformanceStatistics` with `IORegistryEntryCreateCFProperties`. Failure to find a service leaves GPU at zero rather than failing the read.
+- Keys: `"Device Utilization %"` (Intel) or `"GPU Activity(%)"` (Apple Silicon) for total, plus `"Renderer Utilization %"` and `"Tiler Utilization %"`. These two vendor spellings are the known set; the reader checks both and defaults to zero.
+
+**libproc `proc_pid_rusage` / `proc_pidinfo` — process CPU/RAM** (`CPUProcessUsageReader`, `RAMProcessMemoryReader`, `ProcessReaderSupport`):
+- Not a private framework, but the values are entitlement-dependent: `p_uticks`/`p_sticks` and `PROC_PIDTASKINFO` are zeroed for non-root callers without `com.apple.system-task-ports.read`. This is why the CPU reader gates the native path on a one-time probe of PID 1 and falls back to `/bin/ps`, and why cross-user processes are absent from the RAM top list.
+- The `ps` fallback relies on `/bin/ps` being setuid root and carrying that private entitlement; parsing is defensive (whitespace-tolerant, missing columns skipped).
+
+**AppleARMPE IOKit + `hw.perflevel*` sysctls — CPU cluster detection** (`Sources/mactop/Core/CPU/CPUUsageReader.swift`):
+- Apple Silicon E/P-core split is read from `hw.perflevel0.name`/`hw.perflevel1.name` sysctls and `hw.perflevel*.physicalcpu`; cluster membership of individual cores comes from the `AppleARMPE` IOKit tree. On Intel these lookups miss and the reader falls back to a flat core list.
+
+**Mach VM stats + `sysctl` — RAM and CPU totals**: public/stable interfaces (`host_processor_info`, `vm_statistics64`, `vm.swapusage`, `kern.memorystatus_vm_pressure_level`, `kern.boottime`); no special handling.
+
 ## Known Network Caveats
 
 `NetworkInterfaceReader` uses SystemConfiguration's active IPv4 `PrimaryInterface` for interface metadata, local IP, SSID, MAC, and link speed. It still sums byte counters across `en*` interfaces for the menu-bar aggregate.
