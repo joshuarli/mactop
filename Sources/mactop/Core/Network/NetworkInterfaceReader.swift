@@ -49,9 +49,11 @@ public final class NetworkInterfaceReader: @unchecked Sendable {
       current: snapshot.uploadBytes, previous: previousUp, elapsed: elapsed)
     let download = networkCounterRate(
       current: snapshot.downloadBytes, previous: previousDown, elapsed: elapsed)
-    if snapshot.uploadBytes >= previousUp { cumulativeUp += snapshot.uploadBytes - previousUp }
+    if snapshot.uploadBytes >= previousUp {
+      cumulativeUp = saturatingAdd(cumulativeUp, snapshot.uploadBytes - previousUp)
+    }
     if snapshot.downloadBytes >= previousDown {
-      cumulativeDown += snapshot.downloadBytes - previousDown
+      cumulativeDown = saturatingAdd(cumulativeDown, snapshot.downloadBytes - previousDown)
     }
     previousUp = snapshot.uploadBytes
     previousDown = snapshot.downloadBytes
@@ -75,5 +77,11 @@ public final class NetworkInterfaceReader: @unchecked Sendable {
 
 func networkCounterRate(current: UInt64, previous: UInt64, elapsed: TimeInterval) -> Double {
   guard elapsed > 0, previous > 0, current >= previous else { return 0 }
-  return Double(current - previous) / elapsed
+  let rate = Double(current - previous) / elapsed
+  return rate.isFinite ? rate : 0
+}
+
+private func saturatingAdd(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
+  let (value, overflow) = lhs.addingReportingOverflow(rhs)
+  return overflow ? .max : value
 }

@@ -16,7 +16,10 @@ public enum ProcessPlatform {
   public static func readUsage(pid: Int32) -> PlatformProcessUsageSnapshot? {
     var usage = RusageInfoV2()
     let result = withUnsafeMutablePointer(to: &usage) { pointer in
-      pointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 20) { rebound in
+      pointer.withMemoryRebound(
+        to: rusage_info_t?.self,
+        capacity: MemoryLayout<RusageInfoV2>.size / MemoryLayout<integer_t>.stride
+      ) { rebound in
         proc_pid_rusage(pid, 2, rebound)
       }
     }
@@ -35,11 +38,23 @@ public enum ProcessPlatform {
   }
 
   public static func allProcessIDs() -> [Int32] {
-    let count = proc_listallpids(nil, 0)
-    guard count > 0 else { return [] }
-    var pids = [Int32](repeating: 0, count: Int(count) + 16)
-    let bytes = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<Int32>.size))
-    return pids.prefix(max(0, Int(bytes) / MemoryLayout<Int32>.size)).filter { $0 > 0 }
+    let initialBytes = proc_listallpids(nil, 0)
+    guard initialBytes > 0 else { return [] }
+    var capacity = Int(initialBytes) / MemoryLayout<Int32>.size + 16
+    guard capacity > 16, capacity <= 1_000_000 else { return [] }
+    for _ in 0..<3 {
+      var pids = [Int32](repeating: 0, count: Int(capacity))
+      let copied = proc_listallpids(
+        &pids, Int32(pids.count * MemoryLayout<Int32>.size))
+      guard copied >= 0 else { return [] }
+      let copiedCount = Int(copied) / MemoryLayout<Int32>.size
+      if copiedCount < capacity {
+        return pids.prefix(copiedCount).filter { $0 > 0 }
+      }
+      capacity = copiedCount + 16
+      guard capacity <= 1_000_000 else { return [] }
+    }
+    return []
   }
 
   public static func allDecayCPUPercentages() -> [Int32: UInt32] {
@@ -49,7 +64,9 @@ public enum ProcessPlatform {
     let stride = MemoryLayout<kinfo_proc>.stride
     var processes = [kinfo_proc](repeating: kinfo_proc(), count: size / stride + 4)
     var actualSize = processes.count * stride
-    guard sysctl(&mib, 4, &processes, &actualSize, nil, 0) == 0 else { return [:] }
+    guard sysctl(&mib, 4, &processes, &actualSize, nil, 0) == 0,
+      actualSize >= 0, actualSize <= processes.count * stride
+    else { return [:] }
     return processes.prefix(actualSize / stride).reduce(into: [:]) { result, process in
       if process.kp_proc.p_pid > 0 {
         result[process.kp_proc.p_pid] = UInt32(process.kp_proc.p_pctcpu)

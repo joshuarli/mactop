@@ -72,12 +72,13 @@ public final class IOAcceleratorPlatform: @unchecked Sendable {
       let dictionary = properties?.takeRetainedValue() as? [String: Any],
       let performance = dictionary["PerformanceStatistics"] as? [String: Any]
     else { return nil }
-    let total =
-      (performance["Device Utilization %"] as? Double ?? performance["GPU Activity(%)"] as? Double
-        ?? 0) / 100
+    let total = normalizedUtilization(
+      performance["Device Utilization %"] as? Double
+        ?? performance["GPU Activity(%)"] as? Double)
     return (
-      total, (performance["Renderer Utilization %"] as? Double ?? 0) / 100,
-      (performance["Tiler Utilization %"] as? Double ?? 0) / 100
+      total,
+      normalizedUtilization(performance["Renderer Utilization %"] as? Double),
+      normalizedUtilization(performance["Tiler Utilization %"] as? Double)
     )
   }
 
@@ -90,14 +91,21 @@ public final class IOAcceleratorPlatform: @unchecked Sendable {
         let pointer = CFDictionaryGetValue(dictionary, Unmanaged.passUnretained(cfKey).toOpaque())
       else { return nil }
       let value = unsafeBitCast(pointer, to: CFNumber.self)
+      guard CFGetTypeID(value) == CFNumberGetTypeID() else { return nil }
       var result = 0.0
-      return CFNumberGetValue(value, .doubleType, &result) ? result : nil
+      guard CFNumberGetValue(value, .doubleType, &result), result.isFinite else { return nil }
+      return result
     }
     let total = number("Device Utilization %") ?? number("GPU Activity(%)") ?? 0
     return (
-      total / 100, (number("Renderer Utilization %") ?? 0) / 100,
-      (number("Tiler Utilization %") ?? 0) / 100
+      normalizedUtilization(total), normalizedUtilization(number("Renderer Utilization %")),
+      normalizedUtilization(number("Tiler Utilization %"))
     )
+  }
+
+  private func normalizedUtilization(_ percent: Double?) -> Double {
+    guard let percent, percent.isFinite else { return 0 }
+    return min(1, max(0, percent / 100))
   }
 
   private func modelName() -> String {

@@ -85,11 +85,11 @@ class MactopAppDelegate: NSObject, NSApplicationDelegate {
     networkPanel = MetricPopupPanel(contentView: networkPopupView)
 
     let entries: [(view: NSView, width: CGFloat, panel: MetricPopupPanel)] = [
-      (networkView!, 55, networkPanel),
-      (cpuView!, 31, cpuPanel),
-      (ramView!, 31, ramPanel),
-      (gpuView!, 31, gpuPanel),
-      (powerView!, 40, powerPanel),
+      (networkView, 55, networkPanel),
+      (cpuView, 31, cpuPanel),
+      (ramView, 31, ramPanel),
+      (gpuView, 31, gpuPanel),
+      (powerView, 40, powerPanel),
     ]
     for entry in entries {
       let view = entry.view
@@ -148,8 +148,8 @@ class MactopAppDelegate: NSObject, NSApplicationDelegate {
         guard let self else { return }
         guard !self.isPaused else { return }
         self.latestNetwork = network
-        self.networkView.upload = Int64(network.upload)
-        self.networkView.download = Int64(network.download)
+        self.networkView.upload = network.upload
+        self.networkView.download = network.download
         if self.networkPanel.isVisible {
           self.networkPopupView.updateNetworkUsage(network)
         }
@@ -340,7 +340,9 @@ class MactopAppDelegate: NSObject, NSApplicationDelegate {
 
   @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
     guard let item = statusItems.first(where: { $0.button === sender }) else { return }
-    let idx = statusItems.firstIndex(where: { $0.button === sender }) ?? 0
+    guard let idx = statusItems.firstIndex(where: { $0.button === sender }),
+      statusPanels.indices.contains(idx)
+    else { return }
 
     let panels = statusPanels
     let targetPanel = panels[idx]

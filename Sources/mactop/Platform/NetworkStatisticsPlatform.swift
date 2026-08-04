@@ -32,7 +32,15 @@ public final class PlatformNetworkProcessReader: @unchecked Sendable {
     var input: UInt64
     var output: UInt64
   }
+
+  private struct Update: @unchecked Sendable {
+    let pid: Int32?
+    let name: String?
+    let input: UInt64?
+    let output: UInt64?
+  }
   private let queue = DispatchQueue(label: "mactop.network-statistics")
+  private let stateLock = NSLock()
   private let handle: UnsafeMutableRawPointer
   private let manager: UnsafeMutableRawPointer
   private let setDescription: DictionaryBlockFn
@@ -98,22 +106,33 @@ public final class PlatformNetworkProcessReader: @unchecked Sendable {
         self?.update(key: key, dictionary: dictionary)
       }
       let removed: @convention(block) () -> Void = { [weak self] in self?.removeSource(key: key) }
+      self.stateLock.lock()
       self.descriptionBlocks[key] = description
       self.countBlocks[key] = counts
       self.removedBlocks[key] = removed
+      self.stateLock.unlock()
       setDescription(source, description)
       setCounts(source, counts)
       setRemoved(source, removed)
       _ = queryDescription(source)
     }
     _ = setFlags(manager, 0)
-    guard addTCP(manager, 0, 0) >= 0, addUDP(manager, 0, 0) >= 0 else {
-      unsafe dlclose(handle)
-      return nil
-    }
+    // This private ABI exposes no documented manager-destroy function. Do not
+    // dlclose the image while a partially registered manager may retain
+    // callback blocks or function pointers.
+    guard addTCP(manager, 0, 0) >= 0, addUDP(manager, 0, 0) >= 0 else { return nil }
   }
 
-  deinit { unsafe dlclose(handle) }
+  deinit {
+    // Keep the image loaded until process exit: a late private-framework
+    // callback must not jump into unmapped code after this wrapper deinitializes.
+    stateLock.lock()
+    sourceBlock = { _, _ in }
+    descriptionBlocks.removeAll()
+    countBlocks.removeAll()
+    removedBlocks.removeAll()
+    stateLock.unlock()
+  }
 
   public func refresh(timeout: DispatchTime = .now() + .milliseconds(750)) {
     let done = DispatchSemaphore(value: 0)
@@ -133,21 +152,35 @@ public final class PlatformNetworkProcessReader: @unchecked Sendable {
   private func update(key: UInt, dictionary: CFDictionary?) {
     guard let dictionary else { return }
     let values = dictionary as NSDictionary
+    let update = Update(
+      pid: (values[pidKey] as? NSNumber)?.int32Value,
+      name: values[nameKey] as? String,
+      input: (values[inputKey] as? NSNumber)?.uint64Value,
+      output: (values[outputKey] as? NSNumber)?.uint64Value)
+    queue.async { [weak self] in
+      self?.mergeUpdate(key: key, update: update)
+    }
+  }
+
+  private func mergeUpdate(key: UInt, update: Update) {
     let old = sources[key]
-    let pid = (values[pidKey] as? NSNumber)?.int32Value ?? old?.pid ?? 0
+    let pid = update.pid ?? old?.pid ?? 0
     guard pid > 0 else { return }
     sources[key] = Source(
-      pid: pid, name: (values[nameKey] as? String) ?? old?.name ?? "",
-      input: (values[inputKey] as? NSNumber)?.uint64Value ?? old?.input ?? 0,
-      output: (values[outputKey] as? NSNumber)?.uint64Value ?? old?.output ?? 0)
+      pid: pid, name: update.name ?? old?.name ?? "",
+      input: update.input ?? old?.input ?? 0,
+      output: update.output ?? old?.output ?? 0)
   }
 
   private func removeSource(key: UInt) {
     queue.async { [weak self] in
-      self?.sources.removeValue(forKey: key)
-      self?.descriptionBlocks.removeValue(forKey: key)
-      self?.countBlocks.removeValue(forKey: key)
-      self?.removedBlocks.removeValue(forKey: key)
+      guard let self else { return }
+      self.stateLock.lock()
+      self.sources.removeValue(forKey: key)
+      self.descriptionBlocks.removeValue(forKey: key)
+      self.countBlocks.removeValue(forKey: key)
+      self.removedBlocks.removeValue(forKey: key)
+      self.stateLock.unlock()
     }
   }
 

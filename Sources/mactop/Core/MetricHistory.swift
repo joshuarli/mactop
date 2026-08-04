@@ -15,8 +15,14 @@ public struct MetricHistoryPoint<Value: Sendable>: Sendable {
   }
 }
 
+func normalizedMetricUpdateInterval(_ updateInterval: Double) -> Double {
+  guard updateInterval.isFinite else { return 1 }
+  return min(max(updateInterval, 1), 3_600)
+}
+
 func metricGraphSampleCapacity(updateInterval: Double) -> Int {
-  max(2, Int(ceil(metricGraphHistoryWindow / max(updateInterval, 1))))
+  let interval = normalizedMetricUpdateInterval(updateInterval)
+  return max(2, Int(ceil(metricGraphHistoryWindow / interval)))
 }
 
 func smoothMetricValue(

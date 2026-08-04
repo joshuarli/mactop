@@ -240,13 +240,19 @@ private let memoryFormatter: ByteCountFormatter = {
 }()
 
 private func formatMemoryBytes(_ bytes: UInt64) -> String {
-  var s = memoryFormatter.string(fromByteCount: Int64(bytes))
+  let safeBytes = min(bytes, UInt64(Int64.max))
+  var s = memoryFormatter.string(fromByteCount: Int64(safeBytes))
   if let idx = s.lastIndex(of: ",") { s.replaceSubrange(idx...idx, with: ".") }
   return s
 }
 
+private func safeUInt64(_ value: Double) -> UInt64 {
+  guard value.isFinite, value > 0 else { return 0 }
+  return value >= Double(UInt64.max) ? UInt64.max : UInt64(value)
+}
+
 private func formatNetworkSpeedValue(_ bytes: Double) -> (String, String) {
-  let b = Int64(bytes)
+  let b = bytes.isFinite ? max(0, bytes) : 0
   let kb = bytes / 1_000
   let mb = bytes / 1_000_000
   let gb = bytes / 1_000_000_000
@@ -522,9 +528,9 @@ final class CPUPopupView: NSStackView {
   func updateCPUUsage(
     _ detail: CPUUsageDetail, processes: [RankedProcessMetric], syncHistory _: Bool = false
   ) {
-    systemField.stringValue = "\(Int((detail.system * 100).rounded()))%"
-    userField.stringValue = "\(Int((detail.user   * 100).rounded()))%"
-    idleField.stringValue = "\(Int((detail.idle   * 100).rounded()))%"
+    systemField.stringValue = "\(safePercentage(detail.system))%"
+    userField.stringValue = "\(safePercentage(detail.user))%"
+    idleField.stringValue = "\(safePercentage(detail.idle))%"
     uptimeField.stringValue = detail.uptime
 
     circle.setCenterText(nil)
@@ -745,7 +751,7 @@ final class RAMPopupView: NSStackView {
     lineChart.resetMetricHistory(sampleCount: max(initialChartSamples, detail.historyCapacity))
     lineChart.setMetricHistory(detail.history)
 
-    processesView.setRankedProcesses(processes) { v in formatMemoryBytes(UInt64(v)) }
+    processesView.setRankedProcesses(processes) { v in formatMemoryBytes(safeUInt64(v)) }
   }
 
   func clearRAMUsageDisplay() {
@@ -957,18 +963,18 @@ final class GPUPopupView: NSStackView {
     setShowsRenderTiler(detail.hasRenderTilerSplit)
 
     gpuCircle.setFraction(detail.total)
-    gpuCircle.setCenterText("\(Int((detail.total * 100).rounded()))%")
+    gpuCircle.setCenterText("\(safePercentage(detail.total))%")
     gpuChart.resetMetricHistory(sampleCount: max(initialChartSamples, detail.historyCapacity))
     gpuChart.setMetricHistory(detail.history)
 
     guard let renderCircle, let tilerCircle, let renderChart, let tilerChart else { return }
     renderCircle.setFraction(detail.render)
-    renderCircle.setCenterText("\(Int((detail.render * 100).rounded()))%")
+    renderCircle.setCenterText("\(safePercentage(detail.render))%")
     renderChart.resetMetricHistory(sampleCount: max(initialChartSamples, detail.historyCapacity))
     renderChart.setMetricHistory(detail.renderHistory)
 
     tilerCircle.setFraction(detail.tiler)
-    tilerCircle.setCenterText("\(Int((detail.tiler * 100).rounded()))%")
+    tilerCircle.setCenterText("\(safePercentage(detail.tiler))%")
     tilerChart.resetMetricHistory(sampleCount: max(initialChartSamples, detail.historyCapacity))
     tilerChart.setMetricHistory(detail.tilerHistory)
   }

@@ -22,6 +22,7 @@ public final class RAMProcessMemoryReader: @unchecked Sendable {
         mem = resident
       }
 
+      guard Double(mem).isFinite else { continue }
       insertRankedMetric(
         RankedProcessMetric(pid: pid, name: processName(pid: pid), value: Double(mem)), into: &top,
         count: limit

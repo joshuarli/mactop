@@ -39,7 +39,7 @@ public final class SystemMetricsCoordinator: @unchecked Sendable {
     onNetwork: @escaping @MainActor @Sendable (NetworkUsageDetail) -> Void
   ) {
 
-    let interval = config.updateInterval
+    let interval = normalizedMetricUpdateInterval(config.updateInterval)
     cpuReader = CPUUsageReader(updateInterval: interval)
     ramReader = RAMUsageReader(updateInterval: interval)
     gpuReader = GPUUsageReader(updateInterval: interval)

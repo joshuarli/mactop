@@ -76,6 +76,13 @@ public final class CPUUsageReader: @unchecked Sendable {
       contentsOf: snapshot.ticks.map {
         Tick(user: $0.user, sys: $0.system, idle: $0.idle, nice: $0.nice)
       })
+    guard !ticks.isEmpty else {
+      return CPUUsageDetail(
+        total: 0, system: 0, user: 0, idle: 1, usagePerCore: [],
+        coreKinds: coreKinds,
+        loadAvg1: 0, loadAvg5: 0, loadAvg15: 0, uptime: uptimeString(),
+        history: includeHistory ? history.orderedValues : [], historyCapacity: history.capacity)
+    }
     var totalUsage = 0.0
     var systemUsage = 0.0
     var userUsage = 0.0

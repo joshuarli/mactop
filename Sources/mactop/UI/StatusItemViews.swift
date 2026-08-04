@@ -4,6 +4,11 @@ import mactopCore
 // MARK: - Percentage status item (CPU / RAM / GPU)
 // Mirrors the reference menu-bar widget: label (7pt light) on top, value (12pt) on bottom,
 // monochrome color = labelColor (white in dark mode, black in light mode).
+func safePercentage(_ value: Double) -> Int {
+  guard value.isFinite else { return 0 }
+  return Int((min(max(value, 0), 1) * 100).rounded())
+}
+
 
 final class PercentageStatusItemView: NSView {
   let label: String
@@ -13,7 +18,7 @@ final class PercentageStatusItemView: NSView {
 
   var value: Double = 0 {
     didSet {
-      let percent = Int((value * 100).rounded())
+      let percent = safePercentage(value)
       if percent != displayedPercent {
         displayedPercent = percent
         valueString = NSAttributedString(string: "\(percent)%", attributes: Self.valueAttrs)
@@ -122,14 +127,14 @@ final class NetworkSpeedStatusItemView: NSView {
   private var uploadText = "0 KB/s"
   private var downloadText = "0 KB/s"
 
-  var upload: Int64 = 0 {
+  var upload: Double = 0 {
     didSet {
       guard upload != oldValue else { return }
       uploadText = Self.formatNetworkSpeed(upload)
       needsDisplay = true
     }
   }
-  var download: Int64 = 0 {
+  var download: Double = 0 {
     didSet {
       guard download != oldValue else { return }
       downloadText = Self.formatNetworkSpeed(download)
@@ -187,8 +192,8 @@ final class NetworkSpeedStatusItemView: NSView {
       .draw(with: CGRect(x: textX, y: 1, width: textW, height: rowH))
   }
 
-  private static func formatNetworkSpeed(_ bytes: Int64) -> String {
-    let b = Double(bytes)
+  private static func formatNetworkSpeed(_ bytes: Double) -> String {
+    let b = bytes.isFinite ? max(0, bytes) : 0
     switch b {
     case ..<1_000: return "0 KB/s"
     case ..<1_000_000: return "\(Int(b / 1_000)) KB/s"

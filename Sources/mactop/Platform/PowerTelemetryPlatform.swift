@@ -170,7 +170,9 @@ public final class PlatformModeledPowerReader {
 
   deinit {
     Unmanaged<AnyObject>.fromOpaque(subscription).release()
-    dlclose(api.handle)
+    // IOReport has no public subscription-destroy API. Keep the dynamically
+    // loaded image resident for process lifetime rather than risking a late
+    // framework callback into an unmapped function pointer.
   }
 
   public func clearModeledPowerHistory() {
@@ -197,7 +199,7 @@ public final class PlatformModeledPowerReader {
 
     let elapsed = next.time.timeIntervalSince(previous.time)
     previousSample = next
-    guard elapsed > 0, elapsed <= maximumSampleInterval else { return nil }
+    guard elapsed.isFinite, elapsed > 0, elapsed <= maximumSampleInterval else { return nil }
 
     let previousPtr = Unmanaged.passUnretained(previous.sample).toOpaque()
     let nextPtr = Unmanaged.passUnretained(next.sample).toOpaque()
@@ -228,7 +230,10 @@ public final class PlatformModeledPowerReader {
   private func measurePhase<Value>(_ name: String, _ work: () -> Value) -> Value {
     let start = DispatchTime.now().uptimeNanoseconds
     let value = work()
-    phaseTotals[name, default: 0] += DispatchTime.now().uptimeNanoseconds - start
+    let duration = DispatchTime.now().uptimeNanoseconds - start
+    let current = phaseTotals[name, default: 0]
+    phaseTotals[name] = current.addingReportingOverflow(duration).overflow
+      ? .max : current + duration
     return value
   }
 
@@ -311,7 +316,8 @@ public final class PlatformModeledPowerReader {
 
     guard found else { return nil }
     let display = dcpDisplay > 0 ? dcpDisplay : energyDisplay
-    guard platformValidatedPower(cpu + gpu + ane + memory + media + display + other) != nil else {
+    let total = cpu + gpu + ane + memory + media + display + other
+    guard total.isFinite, platformValidatedPower(total) != nil else {
       return nil
     }
     if debugEnabled, !didLogDebug {
@@ -686,15 +692,16 @@ public final class PlatformBatteryPowerReader {
   private func numeric(_ value: Any?) -> Double? {
     switch value {
     case let number as NSNumber:
-      return number.doubleValue
+      let value = number.doubleValue
+      return value.isFinite ? value : nil
     case let value as Int:
-      return Double(value)
+      return Double(value).isFinite ? Double(value) : nil
     case let value as Int64:
-      return Double(value)
+      return Double(value).isFinite ? Double(value) : nil
     case let value as UInt64:
-      return Double(value)
+      return Double(value).isFinite ? Double(value) : nil
     case let value as Double:
-      return value
+      return value.isFinite ? value : nil
     default:
       return nil
     }

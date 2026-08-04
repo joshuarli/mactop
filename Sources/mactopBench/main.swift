@@ -8,8 +8,10 @@ private struct BenchConfiguration {
   let warmupTicks: Int
 
   init(environment: [String: String]) {
-    duration = max(0.1, Double(environment["BENCH_SECONDS"] ?? "5") ?? 5)
-    interval = max(0.01, Double(environment["BENCH_INTERVAL"] ?? "1") ?? 1)
+    let configuredDuration = Double(environment["BENCH_SECONDS"] ?? "5") ?? 5
+    let configuredInterval = Double(environment["BENCH_INTERVAL"] ?? "1") ?? 1
+    duration = configuredDuration.isFinite ? min(max(0.1, configuredDuration), 86_400) : 5
+    interval = configuredInterval.isFinite ? min(max(0.01, configuredInterval), 3_600) : 1
     warmupTicks = max(0, Int(environment["BENCH_WARMUP_TICKS"] ?? "2") ?? 2)
   }
 }
@@ -322,13 +324,13 @@ private struct MactopBench {
       MactopFormat.string("%7.2f", cpuMilliseconds),
       MactopFormat.string("%11.3f", perTick),
       MactopFormat.string("%17d", result.peakLiveBlocks),
-      formatBytes(result.peakLiveBytes, width: 16),
-      formatBytes(result.peakReservedBytes, width: 14),
-      formatBytes(Int(result.peakPhysicalFootprint), width: 15),
+      formatBytes(UInt64(max(0, result.peakLiveBytes)), width: 16),
+      formatBytes(UInt64(max(0, result.peakReservedBytes)), width: 14),
+      formatBytes(result.peakPhysicalFootprint, width: 15),
     ].joined(separator: " ")
   }
 
-  private static func formatBytes(_ bytes: Int, width: Int) -> String {
+  private static func formatBytes(_ bytes: UInt64, width: Int) -> String {
     let value: String
     switch bytes {
     case 1_000_000_000...:

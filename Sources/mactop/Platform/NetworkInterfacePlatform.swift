@@ -52,8 +52,8 @@ public final class NetworkInterfacePlatform: @unchecked Sendable {
         let raw = iface.pointee.ifa_data
       {
         let data = raw.assumingMemoryBound(to: if_data.self).pointee
-        up += UInt64(data.ifi_obytes)
-        down += UInt64(data.ifi_ibytes)
+        up = saturatingAdd(up, UInt64(data.ifi_obytes))
+        down = saturatingAdd(down, UInt64(data.ifi_ibytes))
         if refresh {
           var mac = ""
           address.withMemoryRebound(to: sockaddr_dl.self, capacity: 1) { pointer in
@@ -155,5 +155,10 @@ public final class NetworkInterfacePlatform: @unchecked Sendable {
     let values = Array(bytes)
     guard offset + 5 < values.count else { return "" }
     return (0..<6).map { String(format: "%02x", values[offset + $0]) }.joined(separator: ":")
+  }
+
+  private func saturatingAdd(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
+    let (value, overflow) = lhs.addingReportingOverflow(rhs)
+    return overflow ? .max : value
   }
 }

@@ -28,8 +28,8 @@ public final class NetworkProcessReader: @unchecked Sendable {
       guard let old = previous[pid] else { continue }
       let input = value.input >= old.input ? value.input - old.input : 0
       let output = value.output >= old.output ? value.output - old.output : 0
-      let rate = Double(input + output) / elapsed
-      guard rate > 0 else { continue }
+      let rate = (Double(input) + Double(output)) / elapsed
+      guard rate.isFinite, rate > 0 else { continue }
       insertRankedMetric((pid: pid, rate: rate), into: &top, count: limit) { $0.rate > $1.rate }
     }
     return top.compactMap { item in

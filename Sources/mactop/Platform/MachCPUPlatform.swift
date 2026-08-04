@@ -74,11 +74,13 @@ public enum MachCPUPlatform {
     defer { IOObjectRelease(iterator) }
     var result = Array(repeating: PlatformCPUCoreKind.unknown, count: count)
     while let service = nextObject(iterator) {
+      defer { IOObjectRelease(service) }
       var children: io_iterator_t = 0
       guard IORegistryEntryGetChildIterator(service, kIOServicePlane, &children) == KERN_SUCCESS
       else { continue }
       defer { IOObjectRelease(children) }
       while let child = nextObject(children) {
+        defer { IOObjectRelease(child) }
         var name = [CChar](repeating: 0, count: 128)
         guard IORegistryEntryGetName(child, &name) == KERN_SUCCESS,
           let id = Int(nameString(name).dropFirst(3))

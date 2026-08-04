@@ -40,11 +40,13 @@ func calculateCPUProcessUsagePercent(
   guard elapsed > 0, current.start == previous.start, current.time > previous.time else {
     return nil
   }
-  return Double(current.time - previous.time) / 1_000_000_000.0 / elapsed * 100.0
+  let percent = Double(current.time - previous.time) / 1_000_000_000.0 / elapsed * 100.0
+  return percent.isFinite ? percent : nil
 }
 
 func parsePSProcessOutput(_ output: String, count: Int) -> [(pid: Int32, pct: Double, comm: String)]
 {
+  guard count > 0 else { return [] }
   var results: [(pid: Int32, pct: Double, comm: String)] = []
   var skipHeader = true
   for line in output.split(separator: "\n", omittingEmptySubsequences: true) {
@@ -57,7 +59,7 @@ func parsePSProcessOutput(_ output: String, count: Int) -> [(pid: Int32, pct: Do
     guard parts.count >= 3, let pid = Int32(parts[0]),
       let pct = Double(parts[1].replacingOccurrences(of: ",", with: "."))
     else { continue }
-    guard pct > 0 else { break }
+    guard pct.isFinite, pct > 0 else { break }
     results.append((pid: pid, pct: pct, comm: parts[2...].joined(separator: " ")))
     if results.count >= count { break }
   }
