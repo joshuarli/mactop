@@ -45,12 +45,10 @@ public final class NetworkInterfaceReader: @unchecked Sendable {
       return detail(includeHistory: includeHistory)
     }
     let elapsed = now.timeIntervalSince(lastTime)
-    let upload =
-      elapsed > 0 && previousUp > 0
-      ? Double(max(0, snapshot.uploadBytes - previousUp)) / elapsed : 0
-    let download =
-      elapsed > 0 && previousDown > 0
-      ? Double(max(0, snapshot.downloadBytes - previousDown)) / elapsed : 0
+    let upload = networkCounterRate(
+      current: snapshot.uploadBytes, previous: previousUp, elapsed: elapsed)
+    let download = networkCounterRate(
+      current: snapshot.downloadBytes, previous: previousDown, elapsed: elapsed)
     if snapshot.uploadBytes >= previousUp { cumulativeUp += snapshot.uploadBytes - previousUp }
     if snapshot.downloadBytes >= previousDown {
       cumulativeDown += snapshot.downloadBytes - previousDown
@@ -73,4 +71,9 @@ public final class NetworkInterfaceReader: @unchecked Sendable {
       displayName: "", macAddress: "", ssid: nil, localIP: "", transmitRate: 0, isUp: false,
       history: includeHistory ? history.orderedValues : [], historyCapacity: history.capacity)
   }
+}
+
+func networkCounterRate(current: UInt64, previous: UInt64, elapsed: TimeInterval) -> Double {
+  guard elapsed > 0, previous > 0, current >= previous else { return 0 }
+  return Double(current - previous) / elapsed
 }

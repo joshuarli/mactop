@@ -172,3 +172,18 @@ final class PSProcessOutputParsingTests: XCTestCase {
     XCTAssertTrue(parsePSProcessOutput("  PID  %CPU COMM\n", count: 8).isEmpty)
   }
 }
+
+final class NetworkCounterRateTests: XCTestCase {
+  func testNormalCounterDeltaProducesRate() {
+    XCTAssertEqual(networkCounterRate(current: 3_000, previous: 1_000, elapsed: 2), 1_000)
+  }
+
+  func testCounterResetProducesZeroInsteadOfUnderflowing() {
+    XCTAssertEqual(networkCounterRate(current: 100, previous: 1_000, elapsed: 1), 0)
+  }
+
+  func testInitialCounterAndInvalidElapsedProduceZero() {
+    XCTAssertEqual(networkCounterRate(current: 1_000, previous: 0, elapsed: 1), 0)
+    XCTAssertEqual(networkCounterRate(current: 1_000, previous: 500, elapsed: 0), 0)
+  }
+}
