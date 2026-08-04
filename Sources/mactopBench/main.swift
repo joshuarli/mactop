@@ -6,13 +6,17 @@ private struct BenchConfiguration {
   let duration: TimeInterval
   let interval: TimeInterval
   let warmupTicks: Int
+  let processCount: Int
+  let coordinatorHistory: Bool
 
   init(environment: [String: String]) {
     let configuredDuration = Double(environment["BENCH_SECONDS"] ?? "5") ?? 5
     let configuredInterval = Double(environment["BENCH_INTERVAL"] ?? "1") ?? 1
     duration = configuredDuration.isFinite ? min(max(0.1, configuredDuration), 86_400) : 5
     interval = configuredInterval.isFinite ? min(max(0.01, configuredInterval), 3_600) : 1
-    warmupTicks = max(0, Int(environment["BENCH_WARMUP_TICKS"] ?? "2") ?? 2)
+    warmupTicks = min(max(0, Int(environment["BENCH_WARMUP_TICKS"] ?? "2") ?? 2), 10_000)
+    processCount = min(max(1, Int(environment["BENCH_PROCESS_COUNT"] ?? "8") ?? 8), 128)
+    coordinatorHistory = environment["BENCH_COORDINATOR_HISTORY"] == "1"
   }
 }
 
@@ -21,6 +25,29 @@ private struct AllocationSnapshot {
   let liveBytes: Int
   let reservedBytes: Int
   let physicalFootprint: UInt64
+}
+
+private final class DeliveryCounter: @unchecked Sendable {
+  private let lock = NSLock()
+  private var value = 0
+
+  func increment() {
+    lock.lock()
+    value += 1
+    lock.unlock()
+  }
+
+  func reset() {
+    lock.lock()
+    value = 0
+    lock.unlock()
+  }
+
+  var count: Int {
+    lock.lock()
+    defer { lock.unlock() }
+    return value
+  }
 }
 
 private struct BenchPhaseResult: Codable {
@@ -32,6 +59,7 @@ private struct BenchPhaseResult: Codable {
 private struct BenchResult: Codable {
   let name: String
   let ticks: Int
+  let deliveries: Int
   let wallNanoseconds: UInt64
   let cpuNanoseconds: UInt64
   let peakLiveBlocks: Int
@@ -43,6 +71,7 @@ private struct BenchResult: Codable {
   init(
     name: String,
     ticks: Int,
+    deliveries: Int,
     wallNanoseconds: UInt64,
     cpuNanoseconds: UInt64,
     peakLiveBlocks: Int,
@@ -53,6 +82,7 @@ private struct BenchResult: Codable {
   ) {
     self.name = name
     self.ticks = ticks
+    self.deliveries = deliveries
     self.wallNanoseconds = wallNanoseconds
     self.cpuNanoseconds = cpuNanoseconds
     self.peakLiveBlocks = peakLiveBlocks
@@ -65,7 +95,10 @@ private struct BenchResult: Codable {
 
 @main
 private struct MactopBench {
-  private static let subsystemNames = ["cpu", "ram", "gpu", "power", "net"]
+  private static let subsystemNames = [
+    "cpu", "ram", "gpu", "power", "net", "cpu-process", "ram-process", "net-process",
+    "coordinator",
+  ]
 
   static func main() {
     let configuration = BenchConfiguration(environment: ProcessInfo.processInfo.environment)
@@ -117,14 +150,14 @@ private struct MactopBench {
     print("mactop core benchmark")
     let totalWall = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000_000
     print(
-      "duration=\(formatSeconds(configuration.duration))s interval=\(formatSeconds(configuration.interval))s warmup_ticks=\(configuration.warmupTicks) concurrent_subsystems=\(subsystemNames.count) total_wall=\(formatSeconds(totalWall))s"
+      "duration=\(formatSeconds(configuration.duration))s interval=\(formatSeconds(configuration.interval))s warmup_ticks=\(configuration.warmupTicks) process_count=\(configuration.processCount) coordinator_history=\(configuration.coordinatorHistory ? 1 : 0) concurrent_subsystems=\(subsystemNames.count) total_wall=\(formatSeconds(totalWall))s"
     )
     print(
       "Each subsystem runs in an isolated headless child process concurrently. Memory columns are allocator/task high-water deltas."
     )
     print("")
     print(
-      "subsystem  ticks  wall_ms  cpu_ms  cpu_ms/tick  peak_live_allocs  peak_live_bytes  peak_reserved  peak_footprint"
+      "subsystem       ticks  deliveries  wall_ms  cpu_ms  cpu_ms/tick  peak_live_allocs  peak_live_bytes  peak_reserved  peak_footprint"
     )
     for name in subsystemNames {
       guard let result = results.first(where: { $0.name == name }) else { continue }
@@ -198,8 +231,76 @@ private struct MactopBench {
       return measure(name: name, configuration: configuration) {
         _ = reader.readNetworkUsageDetail(includeHistory: true)
       }
+    case "cpu-process":
+      let reader = CPUProcessUsageReader()
+      return measure(name: name, configuration: configuration) {
+        _ = reader.readTopCPUProcessMetrics(count: configuration.processCount)
+      }
+    case "ram-process":
+      let reader = RAMProcessMemoryReader()
+      return measure(name: name, configuration: configuration) {
+        _ = reader.readTopRAMProcessMetrics(count: configuration.processCount)
+      }
+    case "net-process":
+      let reader = NetworkProcessReader()
+      return measure(name: name, configuration: configuration) {
+        _ = reader.readTopNetworkProcessMetrics(count: configuration.processCount)
+      }
+    case "coordinator":
+      return measureCoordinator(configuration: configuration)
     default:
       fatalError("unsupported benchmark subsystem: \(name)")
+    }
+  }
+
+  private static func measureCoordinator(configuration: BenchConfiguration) -> BenchResult {
+    let deliveries = DeliveryCounter()
+    let config = MactopConfig(updateInterval: configuration.interval)
+    let coordinator = SystemMetricsCoordinator(
+      config: config,
+      onCPU: { _ in deliveries.increment() },
+      onRAM: { _ in deliveries.increment() },
+      onGPU: { _ in deliveries.increment() },
+      onPower: { _ in deliveries.increment() },
+      onNetwork: { _ in deliveries.increment() }
+    )
+    for index in 0..<5 {
+      coordinator.setHistoryEnabled(configuration.coordinatorHistory, for: index)
+    }
+
+    runMainLoop(for: configuration.interval * Double(configuration.warmupTicks))
+    deliveries.reset()
+    let baseline = allocationSnapshot()
+    let startWall = DispatchTime.now().uptimeNanoseconds
+    let startCPU = processCPUTimeNanoseconds()
+    runMainLoop(for: configuration.duration)
+    let endCPU = processCPUTimeNanoseconds()
+    let endWall = DispatchTime.now().uptimeNanoseconds
+    let peak = higherAllocationSnapshot(baseline, allocationSnapshot())
+
+    withExtendedLifetime(coordinator) {}
+    return BenchResult(
+      name: "coordinator",
+      ticks: Int(configuration.duration / configuration.interval),
+      deliveries: deliveries.count,
+      wallNanoseconds: endWall - startWall,
+      cpuNanoseconds: endCPU >= startCPU ? endCPU - startCPU : 0,
+      peakLiveBlocks: Swift.max(0, peak.liveBlocks - baseline.liveBlocks),
+      peakLiveBytes: Swift.max(0, peak.liveBytes - baseline.liveBytes),
+      peakReservedBytes: Swift.max(0, peak.reservedBytes - baseline.reservedBytes),
+      peakPhysicalFootprint: peak.physicalFootprint >= baseline.physicalFootprint
+        ? peak.physicalFootprint - baseline.physicalFootprint
+        : 0,
+      phases: []
+    )
+  }
+
+  private static func runMainLoop(for duration: TimeInterval) {
+    guard duration > 0 else { return }
+    let deadline = Date().addingTimeInterval(duration)
+    while Date() < deadline {
+      let slice = min(0.01, max(0, deadline.timeIntervalSinceNow))
+      RunLoop.main.run(until: Date().addingTimeInterval(slice))
     }
   }
 
@@ -217,7 +318,9 @@ private struct MactopBench {
     let baseline = allocationSnapshot()
     let startWall = DispatchTime.now().uptimeNanoseconds
     let intervalNanoseconds = UInt64(configuration.interval * 1_000_000_000)
-    let deadline = startWall + UInt64(configuration.duration * 1_000_000_000)
+    let durationNanoseconds = UInt64(configuration.duration * 1_000_000_000)
+    let deadline = startWall.addingReportingOverflow(durationNanoseconds).overflow
+      ? .max : startWall + durationNanoseconds
     var nextTick = startWall
     var ticks = 0
     var cpuNanoseconds: UInt64 = 0
@@ -233,7 +336,8 @@ private struct MactopBench {
       }
       peak = higherAllocationSnapshot(peak, allocationSnapshot())
 
-      nextTick += intervalNanoseconds
+      nextTick = nextTick.addingReportingOverflow(intervalNanoseconds).overflow
+        ? deadline : nextTick + intervalNanoseconds
       let now = DispatchTime.now().uptimeNanoseconds
       if nextTick > now {
         let sleepMicroseconds = min((nextTick - now) / 1_000, UInt64(UInt32.max))
@@ -247,6 +351,7 @@ private struct MactopBench {
     return BenchResult(
       name: name,
       ticks: ticks,
+      deliveries: ticks,
       wallNanoseconds: endWall - startWall,
       cpuNanoseconds: cpuNanoseconds,
       peakLiveBlocks: Swift.max(0, peak.liveBlocks - baseline.liveBlocks),
@@ -285,6 +390,23 @@ private struct MactopBench {
     return result == KERN_SUCCESS ? UInt64(info.phys_footprint) : 0
   }
 
+  private static func processCPUTimeNanoseconds() -> UInt64 {
+    var info = task_thread_times_info_data_t()
+    var count = mach_msg_type_number_t(
+      MemoryLayout<task_thread_times_info_data_t>.size / MemoryLayout<integer_t>.size)
+    let result = withUnsafeMutablePointer(to: &info) { pointer in
+      pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { rebound in
+        task_info(
+          mach_task_self_, task_flavor_t(TASK_THREAD_TIMES_INFO), rebound, &count)
+      }
+    }
+    guard result == KERN_SUCCESS else { return 0 }
+    return UInt64(info.user_time.seconds) * 1_000_000_000
+      + UInt64(info.user_time.microseconds) * 1_000
+      + UInt64(info.system_time.seconds) * 1_000_000_000
+      + UInt64(info.system_time.microseconds) * 1_000
+  }
+
   private static func threadCPUTimeNanoseconds() -> UInt64 {
     var info = thread_basic_info()
     var count = mach_msg_type_number_t(THREAD_INFO_MAX)
@@ -318,8 +440,9 @@ private struct MactopBench {
     let cpuMilliseconds = Double(result.cpuNanoseconds) / 1_000_000
     let perTick = result.ticks > 0 ? cpuMilliseconds / Double(result.ticks) : 0
     return [
-      result.name.padding(toLength: 10, withPad: " ", startingAt: 0),
+      result.name.padding(toLength: 14, withPad: " ", startingAt: 0),
       MactopFormat.string("%5d", result.ticks),
+      MactopFormat.string("%10d", result.deliveries),
       MactopFormat.string("%8.1f", wallMilliseconds),
       MactopFormat.string("%7.2f", cpuMilliseconds),
       MactopFormat.string("%11.3f", perTick),

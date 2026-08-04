@@ -6,11 +6,11 @@ This document records the next performance work for `mactop`. The project has mi
 
 The baseline comes from the concurrent headless benchmark in `Sources/mactopBench/main.swift`, run through `make bench`:
 
-- Five isolated child processes run concurrently: CPU, RAM, GPU, power, and network.
+- Nine isolated child processes run concurrently: CPU, RAM, GPU, power, network interface, CPU processes, RAM processes, network processes, and `SystemMetricsCoordinator`.
 - Each child warms up for two ticks, then reads once per second for five seconds.
-- The benchmark links only `mactopCore`; it does not start AppKit or the menu-bar application.
+- The benchmark links only `mactopCore`; it does not start AppKit or the menu-bar application. The coordinator scenario uses a headless Foundation run loop and callback sinks.
 - `includeHistory` is enabled, so this is a conservative core-read baseline.
-- The network reader performs no external network requests.
+- The network-interface reader performs no external network requests. The network-process reader exercises the private NetworkStatistics callback path in isolation.
 
 Representative diagnostic run:
 

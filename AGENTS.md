@@ -39,18 +39,18 @@ make bench
 
 `make bench` builds and runs the `mactopBench` executable from `Sources/mactopBench/main.swift`. It links only the `mactopCore` target from `Sources/mactop/Core/`; it does not create an `NSApplication`, register an `NSStatusItem`, construct popup views, run AppKit timers, or execute `SystemMetricsCoordinator`.
 
-The benchmark launches one isolated child process per subsystem and starts all five children concurrently: `CPUUsageReader`, `RAMUsageReader`, `GPUUsageReader`, `PowerTelemetryReader`, and `NetworkInterfaceReader`. Each child gets two warm-up ticks, then one read per interval for five seconds, so the default measured wall time is approximately five seconds plus child startup and build time. The output reports the actual completed `ticks`. Per-subsystem allocator and footprint measurements are isolated because each child owns exactly one reader. The network run performs no external network requests, so HTTP latency and callbacks do not contaminate the baseline.
+The benchmark launches one isolated child process per subsystem and starts all nine children concurrently: `CPUUsageReader`, `RAMUsageReader`, `GPUUsageReader`, `PowerTelemetryReader`, `NetworkInterfaceReader`, `CPUProcessUsageReader`, `RAMProcessMemoryReader`, `NetworkProcessReader`, and `SystemMetricsCoordinator`. Each child gets two warm-up ticks, then one read per interval for five seconds, so the default measured wall time is approximately five seconds plus child startup and build time. The output reports the actual completed `ticks`. Per-subsystem allocator and footprint measurements are isolated because each child owns exactly one reader or coordinator. The network-interface run performs no external network requests; the network-process run exercises the private `NetworkStatistics.framework` callbacks in its own child. The coordinator run drives its utility queues and main-actor callbacks through a headless `RunLoop`, reporting callback deliveries in addition to read ticks.
 
 The default cadence can be overridden without editing the repository:
 
 ```sh
-BENCH_SECONDS=20 BENCH_INTERVAL=1 BENCH_WARMUP_TICKS=3 make bench
+BENCH_SECONDS=20 BENCH_INTERVAL=1 BENCH_WARMUP_TICKS=3 BENCH_PROCESS_COUNT=8 make bench
 ```
 
 The output columns are defined as follows:
 
 - `wall_ms`: elapsed time for that subsystem child’s measured window, including tick sleeps; all rows overlap in wall time.
-- `total_wall`: parent-process elapsed time from launching the five children until all five exit.
+- `total_wall`: parent-process elapsed time from launching the eight children until all eight exit.
 - `cpu_ms`: user plus system CPU time for the benchmark thread, measured with Mach `thread_info`; tick sleeps do not count as CPU time.
 - `cpu_ms/tick`: `cpu_ms` divided by the actual number of completed reads.
 - `peak_live_allocs`: peak increase in live malloc blocks from the post-warm-up baseline, sampled with `malloc_zone_statistics(nil, ...)`.
@@ -62,7 +62,12 @@ The report also prints opt-in phase timings for power and GPU. Power phases are 
 
 These allocation columns measure live and peak allocator state, not the total number of malloc calls. Use Instruments only after `make bench` identifies a subsystem that needs call-site attribution. For a Time Profiler or Allocations trace, profile `mactopBench` rather than the menu-bar app so launch/AppKit work remains separate from core reader behavior.
 
-When interpreting results, compare like-for-like runs on the same machine and power state. The power reader may load private `IOReport` lazily, the GPU reader may discover its IOKit service on the first read, and network interface metadata may change when the active interface changes; keep those first-read effects in the warm-up window unless startup cost is the subject of the investigation.
+`BENCH_PROCESS_COUNT` controls the number of rows retained by each process-ranking reader; it defaults to 8 and is capped at 128. Process readers are benchmarked in isolated children so their libproc scans, `/bin/ps` fallback, display-name resolution, and private NetworkStatistics callbacks do not contaminate the aggregate readers. The benchmark does not create AppKit views, so icon lookup remains outside this coverage.
+`BENCH_PROCESS_COUNT` controls the number of rows retained by each process-ranking reader; it defaults to 8 and is capped at 128. Process readers are benchmarked in isolated children so their libproc scans, `/bin/ps` fallback, display-name resolution, and private NetworkStatistics callbacks do not contaminate the aggregate readers. The benchmark does not create AppKit views, so icon lookup remains outside this coverage.
+
+`BENCH_COORDINATOR_HISTORY=1` enables history delivery for all five coordinator metrics; the default `0` measures the normal hidden-popup path. The coordinator row's `deliveries` value counts callback deliveries to its headless sinks; the five metric callbacks normally produce five deliveries per completed coordinator tick.
+
+When interpreting results, compare like-for-like runs on the same machine and power state. The power reader may load private `IOReport` lazily, the GPU reader may discover its IOKit service on the first read, network interface metadata may change when the active interface changes, and NetworkStatistics availability/source counts may change with system traffic; keep those first-read effects in the warm-up window unless startup cost is the subject of the investigation.
 
 ## Runtime Flow
 
