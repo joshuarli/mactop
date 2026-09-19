@@ -1,26 +1,57 @@
 # Performance Plan
 
-This document records the next performance work for `mactop`. The project has migrated to **macOS 26.5.2** and **Swift 6.3.3** (commit 8a4df3e), so the deferred optimizations below are unblocked. The power and GPU optimizations are both complete.
+This document records the next performance work for `mactop`. The project previously migrated to **macOS 26.5.2** and **Swift 6.3.3** (commit 8a4df3e), which unblocked the deferred optimizations below; the power and GPU optimizations are both complete. It has since upgraded to **Swift 6.4 with macOS 27.0+ only** (`// swift-tools-version: 6.4`, `platforms: [.macOS("27.0")]`), built with the macOS 27.0 SDK. That upgrade is performance-neutral (see baseline below).
 
 ## Current Baseline
 
 The baseline comes from the concurrent headless benchmark in `Sources/mactopBench/main.swift`, run through `make bench`:
 
 - Nine isolated child processes run concurrently: CPU, RAM, GPU, power, network interface, CPU processes, RAM processes, network processes, and `SystemMetricsCoordinator`.
-- Each child warms up for two ticks, then reads once per second for five seconds.
+- Each child warms up for two ticks, then reads once per second (default 5 s; 20 s for the comparison runs below).
 - The benchmark links only `mactopCore`; it does not start AppKit or the menu-bar application. The coordinator scenario uses a headless Foundation run loop and callback sinks.
 - `includeHistory` is enabled, so this is a conservative core-read baseline.
 - The network-interface reader performs no external network requests. The network-process reader exercises the private NetworkStatistics callback path in isolation.
+- `make bench` builds `mactopBench` with `-c release` and runs `.build/release/mactopBench`. Baselines must come from release builds: a debug build measured ~2–3x higher per-tick CPU on the same machine (CPU 2.52 ms/tick debug vs ~1.0 release; coordinator 16.6 vs ~13).
 
-Representative diagnostic run:
+Representative release run (Swift 6.4, macOS 27.0 SDK, 20 s / 20 ticks):
 
 | Subsystem | CPU total | CPU per tick | Peak live allocations | Peak live bytes |
 | --- | ---: | ---: | ---: | ---: |
-| CPU | 0.32–0.51 ms | 0.063–0.101 ms | 0 | 80 B |
-| RAM | 0.14–0.21 ms | 0.029–0.042 ms | 0 | 16 B |
-| GPU | 0.57–0.84 ms | 0.115–0.168 ms | 0 | 16 B |
-| Power | 2.56–4.99 ms | 0.511–0.998 ms | 1 | 32 B |
-| Network | 0.36–0.54 ms | 0.072–0.109 ms | 0 | 16 B |
+| CPU | 11.33 ms | 0.567 ms | 2 | 1.1K |
+| RAM | 0.44 ms | 0.022 ms | 0 | 0 B |
+| GPU | 2.10 ms | 0.105 ms | 0 | 0 B |
+| Power | 9.98 ms | 0.499 ms | 1 | 32 B |
+| Network | 4.32 ms | 0.216 ms | 1 | 32 B |
+| CPU processes | 20.07 ms | 1.004 ms | 86 | 6.9K |
+| RAM processes | 2.66 ms | 0.133 ms | 2 | 128 B |
+| Network processes | 1.53 ms | 0.076 ms | 206 | 14.2K |
+| Coordinator | 101.23 ms | 5.061 ms | 3351 | 218.4K |
+
+Steady-state power phases over those 20 ticks (`io_report.sample` runs on its 2-second cadence, 7 samples): `io_report.sample` 21.83 ms total / 1.091 ms per tick; `io_report.delta` 0.07 / 0.004; `io_report.parse` 0.02 / 0.001; `battery.read` 1.68 / 0.084. GPU `ioaccelerator.properties`: 1.98 / 0.099.
+
+### Swift 6.4 / macOS 27 upgrade comparison
+
+Before (Swift 6.3.3, macOS 26.5.2 target) vs after (Swift 6.4, macOS 27.0 target + SDK 27.0), paired 20-second release runs back-to-back on the same machine and power state, 30 s cooldown between runs:
+
+| Subsystem | Before (6.3.3) | After (6.4) | Delta per tick |
+| --- | ---: | ---: | ---: |
+| CPU | 0.482 ms | 0.567 ms | +0.085 ms |
+| RAM | 0.016 ms | 0.022 ms | +0.006 ms |
+| GPU | 0.118 ms | 0.105 ms | −0.013 ms |
+| Power | 0.600 ms | 0.499 ms | −0.101 ms |
+| Network | 0.161 ms | 0.216 ms | +0.055 ms |
+| CPU processes | 1.017 ms | 1.004 ms | −0.013 ms |
+| RAM processes | 0.144 ms | 0.133 ms | −0.011 ms |
+| Network processes | 0.079 ms | 0.076 ms | −0.003 ms |
+| Coordinator | 5.366 ms | 5.061 ms | −0.305 ms |
+
+Interleaved 5-second A/B rounds under shared load showed the same picture: deltas flip sign run to run and stay smaller than round-to-round drift. Verdict: the upgrade is performance-neutral; no systematic increase or decrease is attributable to it. An early post-upgrade run that looked slower was load contamination (`speechmaintenanced` at ~90% CPU), confirmed by re-measuring the old binary under the same load.
+
+Methodology notes for future comparisons:
+
+- Compare like-for-like runs on the same machine and power state, interleaved (alternate order per round) with a cooldown between runs; back-to-back runs without cooldown read hotter.
+- Coordinator `cpu_ms/tick` amortizes a large fixed cost (~75 ms setup) over the run, so only compare equal durations.
+- This comparison was built with Xcode 27.0 beta (27A266a). Re-run `make bench` after moving to the Xcode GM and re-validate before claiming the numbers held.
 
 The diagnostic phase recorder adds small timing and dictionary overhead, so phase values are for ranking bottlenecks, not for exact production CPU accounting. The normal app path leaves the recorder disabled.
 
@@ -77,11 +108,11 @@ Every optimization must preserve:
 
 ## Validation After Migration
 
-After migrating to macOS 26.5.2+ and Swift 6.3.3+:
+After migrating to macOS 27.0+ and Swift 6.4 (done — see baseline above):
 
-1. Record a fresh unmodified baseline with `make bench`.
-2. Run at least three comparable benchmark samples on the same power state.
-3. Compare `cpu_ms`, `cpu_ms/tick`, phase wall time, peak live allocations, and peak footprint.
-4. Run `swift build` and `swift test`.
+1. ~~Record a fresh unmodified baseline with `make bench`.~~ Done: release baseline + paired 6.3.3/6.4 A/B, verdict performance-neutral.
+2. ~~Run at least three comparable benchmark samples on the same power state.~~ Done: three 5 s release runs pre-upgrade, three interleaved 5 s A/B rounds, one paired 20 s A/B.
+3. ~~Compare `cpu_ms`, `cpu_ms/tick`, phase wall time, peak live allocations, and peak footprint.~~ Done, see table.
+4. ~~Run `swift build` and `swift test`.~~ Done: `swift build -c release` clean, 25/25 tests pass under Xcode 27 Swift 6.4.
 5. Run the app and verify power/GPU values visually and with `MACTOP_DEBUG_POWER=1` where relevant.
 6. Keep an optimization only when it improves steady-state cost without changing the supported metric contract.

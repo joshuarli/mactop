@@ -1,4 +1,4 @@
-// swift-tools-version: 6.3
+// swift-tools-version: 6.4
 import PackageDescription
 
 let swift6Settings: [SwiftSetting] = [
@@ -8,7 +8,7 @@ let swift6Settings: [SwiftSetting] = [
 
 let package = Package(
     name: "mactop",
-    platforms: [.macOS("26.5.2")],
+    platforms: [.macOS("27.0")],
     products: [
         .library(name: "mactopCore", targets: ["mactopCore"]),
         .executable(name: "mactop", targets: ["mactop"]),
