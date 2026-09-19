@@ -8,6 +8,7 @@ public struct PlatformRAMSnapshot: Sendable {
   public let compressedBytes: UInt64
   public let freeBytes: UInt64
   public let swapBytes: UInt64
+  public let swapFileBytes: UInt64
   public let totalBytes: UInt64
   public let pressureLevel: Int
 }
@@ -62,6 +63,7 @@ public final class MachRAMPlatform: @unchecked Sendable {
       compressedBytes: compressed,
       freeBytes: totalBytes > used ? totalBytes - used : 0,
       swapBytes: cachedSwapBytes,
+      swapFileBytes: saturatingMultiply(UInt64(stats.swap_count), pageSize),
       totalBytes: totalBytes,
       pressureLevel: cachedPressureLevel
     )

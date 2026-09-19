@@ -74,14 +74,20 @@ public final class NetworkInterfacePlatform: @unchecked Sendable {
       if refresh, let address = iface.pointee.ifa_addr, address.pointee.sa_family == UInt8(AF_INET)
       {
         var raw = address.pointee
-        var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
-        withUnsafeMutablePointer(to: &raw) { pointer in
-          pointer.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { address in
-            var value = address.pointee.sin_addr
-            inet_ntop(AF_INET, &value, &buffer, socklen_t(INET_ADDRSTRLEN))
+        let ip = withUnsafeTemporaryAllocation(of: CChar.self, capacity: Int(INET_ADDRSTRLEN)) {
+          buffer -> String in
+          guard let base = buffer.baseAddress else { return "" }
+          let written: UnsafePointer<CChar>? = withUnsafeMutablePointer(to: &raw) {
+            pointer in
+            pointer.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { address in
+              var value = address.pointee.sin_addr
+              return inet_ntop(AF_INET, &value, base, socklen_t(INET_ADDRSTRLEN))
+            }
           }
+          guard written != nil else { return "" }
+          return decodeCString(UnsafePointer(base))
         }
-        ips[name] = decodeCString(buffer)
+        ips[name] = ip
         if firstIP.isEmpty { firstIP = name }
       }
     }

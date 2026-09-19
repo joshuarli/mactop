@@ -109,11 +109,15 @@ public final class IOAcceleratorPlatform: @unchecked Sendable {
   }
 
   private func modelName() -> String {
-    var buffer = [CChar](repeating: 0, count: 256)
-    var size = buffer.count
-    sysctlbyname("machdep.cpu.brand_string", &buffer, &size, nil, 0)
-    let value = String(
-      decoding: buffer.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+    let value = withUnsafeTemporaryAllocation(of: CChar.self, capacity: 256) { buffer -> String in
+      guard let base = buffer.baseAddress else { return "" }
+      buffer[0] = 0
+      var size = buffer.count
+      sysctlbyname("machdep.cpu.brand_string", base, &size, nil, 0)
+      return String(
+        decoding: buffer.prefix(while: { $0 != 0 }).lazy.map { UInt8(bitPattern: $0) },
+        as: UTF8.self)
+    }
     return value.isEmpty ? "GPU" : "\(value) GPU"
   }
 

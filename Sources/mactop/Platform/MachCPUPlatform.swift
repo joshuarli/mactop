@@ -58,9 +58,11 @@ public enum MachCPUPlatform {
   }
 
   public static func loadAverage() -> [Double] {
-    var values = [Double](repeating: 0, count: 3)
-    getloadavg(&values, 3)
-    return values
+    withUnsafeTemporaryAllocation(of: Double.self, capacity: 3) { buffer in
+      guard let base = buffer.baseAddress else { return [] }
+      getloadavg(base, 3)
+      return Array(buffer)
+    }
   }
 
   private static func readCoreKinds(count: Int) -> [PlatformCPUCoreKind] {
@@ -81,10 +83,13 @@ public enum MachCPUPlatform {
       defer { IOObjectRelease(children) }
       while let child = nextObject(children) {
         defer { IOObjectRelease(child) }
-        var name = [CChar](repeating: 0, count: 128)
-        guard IORegistryEntryGetName(child, &name) == KERN_SUCCESS,
-          let id = Int(nameString(name).dropFirst(3))
-        else { continue }
+        let id = withUnsafeTemporaryAllocation(of: CChar.self, capacity: 128) { buffer -> Int? in
+          guard let base = buffer.baseAddress,
+            IORegistryEntryGetName(child, base) == KERN_SUCCESS
+          else { return nil }
+          return Int(nameString(buffer: buffer).dropFirst(3))
+        }
+        guard let id else { continue }
         var properties: Unmanaged<CFMutableDictionary>?
         guard
           IORegistryEntryCreateCFProperties(child, &properties, kCFAllocatorDefault, 0)
@@ -107,7 +112,8 @@ public enum MachCPUPlatform {
     return object == 0 ? nil : object
   }
 
-  private static func nameString(_ name: [CChar]) -> String {
-    String(decoding: name.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+  private static func nameString(buffer: UnsafeMutableBufferPointer<CChar>) -> String {
+    String(
+      decoding: buffer.prefix(while: { $0 != 0 }).lazy.map { UInt8(bitPattern: $0) }, as: UTF8.self)
   }
 }

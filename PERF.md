@@ -51,6 +51,7 @@ Methodology notes for future comparisons:
 
 - Compare like-for-like runs on the same machine and power state, interleaved (alternate order per round) with a cooldown between runs; back-to-back runs without cooldown read hotter.
 - Coordinator `cpu_ms/tick` amortizes a large fixed cost (~75 ms setup) over the run, so only compare equal durations.
+- Per-tick heap scratch buffers in the platform readers (`allProcessIDs`, `allDecayCPUPercentages`, per-process `proc_name`/`proc_pidpath`, `loadAverage`, `brand_string`, `inet_ntop`) now use stack temporaries (`withUnsafeTemporaryAllocation`). This cut per-tick malloc churn by construction but did not move allocator high-water or `cpu_ms/tick`: peak is dominated by result structures (dictionaries, strings, ranked rows), and a 20 s post-change run measured flat allocator columns with CPU deltas fully explained by machine load (the untouched power reader tripled in the same run).
 - This comparison was built with Xcode 27.0 beta (27A266a). Re-run `make bench` after moving to the Xcode GM and re-validate before claiming the numbers held.
 
 The diagnostic phase recorder adds small timing and dictionary overhead, so phase values are for ranking bottlenecks, not for exact production CPU accounting. The normal app path leaves the recorder disabled.

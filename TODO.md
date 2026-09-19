@@ -82,3 +82,14 @@ Priority order:
 4. Use Instruments on the actual AppKit app only if popup interaction feels slow; the core benchmark already indicates the readers are not a concern.
 
 So: yes, the utility is currently lean, and there is no obvious memory leak or high-cost subsystem demanding immediate work.
+
+### 6. Watch list (Swift 6.4 / macOS 27 era)
+
+Re-check these on each macOS 27.x seed and each Swift toolchain upgrade. None is actionable today; each was investigated in September 2026 and found not-yet-usable or not-applicable.
+
+1. **`HOST_CPU_COUNTERS_INFO` / `energy_nj`.** The macOS 27 SDK headers add a `host_info` flavor reporting per-host user/system/idle time plus cycles, instructions, and `energy_nj` — but the 27.0 seed kernel returns zero items for it (verified live with a C probe: `kr=0`, out-count 0). If a later 27.x kernel implements it, the public energy counter could validate, or partially replace, the private-IOReport CPU-energy path. Re-probe per OS update alongside `MACTOP_DEBUG_POWER=1` channel validation.
+2. **Borrowing iteration (`Iterable`, SE-0516).** Advertised for 6.4 but implementation status pointed at Swift 6.5. Re-evaluate copy-free `Span`/`InlineArray` iteration after the next toolchain upgrade; only relevant if hot buffers migrate to those types (see 3).
+3. **`NonisolatedNonsendingByDefault` still opt-in.** Still an upcoming feature flag in Swift 6.4 — keep it in `Package.swift`. Remove only when a future Swift makes it the default (removing early would silently change `nonisolated async` executor semantics).
+4. **Neural Engine memory attribution.** On macOS 27, Neural Engine memory is attributed to the app process instead of the system. When local models run, expect shifted per-process vs system RAM attribution while reconciling mactop RAM totals. No code change; context for interpreting the RAM popup.
+5. **`hw.perflevelN.sharesl2` sysctl.** New in the 27 SDK; a bitmap of perflevels sharing L2 cache. Could refine E/P cluster topology detection in `MachCPUPlatform.readCoreKinds` on future chips. Correctness, not performance.
+6. **Re-run `make bench` on the Xcode GM.** The 6.4/27.0 baseline and A/B comparison were built with Xcode 27.0 beta (27A266a); confirm the numbers hold before treating them as settled.

@@ -729,7 +729,8 @@ final class RAMPopupView: NSStackView {
     wiredField.stringValue = formatMemoryBytes(detail.wiredBytes)
     compField.stringValue = formatMemoryBytes(detail.compressedBytes)
     freeField.stringValue = formatMemoryBytes(detail.freeBytes)
-    swapField.stringValue = formatMemoryBytes(detail.swapBytes)
+    swapField.stringValue =
+      "\(formatMemoryBytes(detail.swapBytes)) (\(formatMemoryBytes(detail.swapFileBytes)) file)"
 
     circle.setCenterText(nil)
     circle.setSegmentValues([

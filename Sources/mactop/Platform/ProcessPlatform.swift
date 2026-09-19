@@ -43,18 +43,28 @@ public enum ProcessPlatform {
     var capacity = Int(initialBytes) / MemoryLayout<Int32>.size + 16
     guard capacity > 16, capacity <= 1_000_000 else { return [] }
     for _ in 0..<3 {
-      var pids = [Int32](repeating: 0, count: Int(capacity))
-      let copied = proc_listallpids(
-        &pids, Int32(pids.count * MemoryLayout<Int32>.size))
-      guard copied >= 0 else { return [] }
-      let copiedCount = Int(copied) / MemoryLayout<Int32>.size
-      if copiedCount < capacity {
-        return pids.prefix(copiedCount).filter { $0 > 0 }
+      let outcome = withUnsafeTemporaryAllocation(of: Int32.self, capacity: capacity) {
+        sampleProcessIDs(buffer: $0)
       }
-      capacity = copiedCount + 16
-      guard capacity <= 1_000_000 else { return [] }
+      if let retryCapacity = outcome.retryCapacity {
+        guard retryCapacity <= 1_000_000 else { return [] }
+        capacity = retryCapacity
+        continue
+      }
+      return outcome.ids
     }
     return []
+  }
+
+  private static func sampleProcessIDs(buffer: UnsafeMutableBufferPointer<Int32>) -> (
+    ids: [Int32], retryCapacity: Int?
+  ) {
+    guard let base = buffer.baseAddress else { return ([], nil) }
+    let copied = proc_listallpids(base, Int32(buffer.count * MemoryLayout<Int32>.size))
+    guard copied >= 0 else { return ([], nil) }
+    let copiedCount = Int(copied) / MemoryLayout<Int32>.size
+    guard copiedCount < buffer.count else { return ([], copiedCount + 16) }
+    return (buffer.prefix(copiedCount).filter { $0 > 0 }, nil)
   }
 
   public static func allDecayCPUPercentages() -> [Int32: UInt32] {
@@ -62,30 +72,40 @@ public enum ProcessPlatform {
     var size = 0
     guard sysctl(&mib, 4, nil, &size, nil, 0) == 0, size > 0 else { return [:] }
     let stride = MemoryLayout<kinfo_proc>.stride
-    var processes = [kinfo_proc](repeating: kinfo_proc(), count: size / stride + 4)
-    var actualSize = processes.count * stride
-    guard sysctl(&mib, 4, &processes, &actualSize, nil, 0) == 0,
-      actualSize >= 0, actualSize <= processes.count * stride
-    else { return [:] }
-    return processes.prefix(actualSize / stride).reduce(into: [:]) { result, process in
-      if process.kp_proc.p_pid > 0 {
-        result[process.kp_proc.p_pid] = UInt32(process.kp_proc.p_pctcpu)
+    return withUnsafeTemporaryAllocation(of: kinfo_proc.self, capacity: size / stride + 4) { buffer in
+      var actualSize = buffer.count * stride
+      guard let base = buffer.baseAddress,
+        sysctl(&mib, 4, base, &actualSize, nil, 0) == 0,
+        actualSize >= 0, actualSize <= buffer.count * stride
+      else { return [:] }
+      return buffer.prefix(actualSize / stride).reduce(into: [:]) { result, process in
+        if process.kp_proc.p_pid > 0 {
+          result[process.kp_proc.p_pid] = UInt32(process.kp_proc.p_pctcpu)
+        }
       }
     }
   }
 
   public static func processName(pid: Int32) -> String {
-    var buffer = [CChar](repeating: 0, count: 1024)
-    proc_name(pid, &buffer, UInt32(buffer.count))
-    return String(
-      decoding: buffer.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+    withUnsafeTemporaryAllocation(of: CChar.self, capacity: 1024) { buffer in
+      guard let base = buffer.baseAddress else { return "" }
+      buffer[0] = 0
+      proc_name(pid, base, UInt32(buffer.count))
+      return String(
+        decoding: buffer.prefix(while: { $0 != 0 }).lazy.map { UInt8(bitPattern: $0) },
+        as: UTF8.self)
+    }
   }
 
   public static func processPath(pid: Int32) -> String? {
-    var buffer = [CChar](repeating: 0, count: 4096)
-    guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
-    return String(
-      decoding: buffer.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+    withUnsafeTemporaryAllocation(of: CChar.self, capacity: 4096) { buffer in
+      guard let base = buffer.baseAddress else { return nil }
+      buffer[0] = 0
+      guard proc_pidpath(pid, base, UInt32(buffer.count)) > 0 else { return nil }
+      return String(
+        decoding: buffer.prefix(while: { $0 != 0 }).lazy.map { UInt8(bitPattern: $0) },
+        as: UTF8.self)
+    }
   }
 
   private struct RusageInfoV2 {
