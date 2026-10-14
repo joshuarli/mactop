@@ -16,7 +16,7 @@ For another focused test, select its XCTest class from [ProcessReadersTests.swif
 Those tests cover ranking, CPU deltas, power validation, ps parsing, and network counter rates.
 They do not exercise live readers, private callbacks, the coordinator, or AppKit views.
 
-`make lint` points to a removed package and fails. `make fmtlint` formats source before reaching that failure. Do not run it.
+`make lint` is not configured (linter package removed). There is no `make fmtlint`.
 
 ## Install from source
 

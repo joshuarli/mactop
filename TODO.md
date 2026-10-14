@@ -13,15 +13,6 @@ Priorities are assumed from review impact and likelihood. Findings are open; no 
 - **Effort:** M
 - **Design:** [Source-level network accounting](docs/rfc/MAC-2-network-source-accounting.md)
 
-### MAC-3 · P2 · The lint target points to a deleted package
-
-- **Area:** Build
-- **Where:** `Makefile:20`, `Makefile:24`
-- **Problem:** `make lint` fails with a chdir error for `Tools/MactopLint`. Commit `24f01b5` removed the package but left its callers. `make fmtlint` changes source formatting before failing at the same target.
-- **Recommendation:** Remove both stale targets if lint removal was intentional, or restore a supported check. Keep the documented command executable.
-- **Fix with:** dead-code-archaeology
-- **Effort:** S
-
 ### MAC-4 · P2 · The common CPU path never expires cached PID names
 
 - **Area:** Data

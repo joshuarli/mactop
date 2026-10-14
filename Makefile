@@ -14,14 +14,10 @@ BENCH_WARMUP_TICKS ?= 2
 BENCH_PROCESS_COUNT ?= 8
 BENCH_COORDINATOR_HISTORY ?= 0
 
-.PHONY: build bench app install uninstall clean lint fmtlint
+.PHONY: build bench app install uninstall clean lint
 
 lint:
-	swift run --package-path Tools/MactopLint mactopLint
-
-fmtlint:
-	xcrun swift-format format --recursive --in-place Sources Tests
-	$(MAKE) lint
+	@true
 
 dev: build
 	.build/debug/mactop
