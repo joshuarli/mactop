@@ -8,7 +8,7 @@ public final class RAMProcessMemoryReader: @unchecked Sendable {
 
   public func readTopRAMProcessMetrics(count limit: Int = 8) -> [RankedProcessMetric] {
     let pids = ProcessPlatform.allProcessIDs()
-    var top: [RankedProcessMetric] = []
+    var candidates: [(pid: Int32, memory: Double)] = []
     var activePIDs = Set<Int32>()
 
     for pid in pids {
@@ -22,15 +22,15 @@ public final class RAMProcessMemoryReader: @unchecked Sendable {
       }
 
       guard Double(mem).isFinite else { continue }
-      insertRankedMetric(
-        RankedProcessMetric(pid: pid, name: processName(pid: pid), value: Double(mem)), into: &top,
-        count: limit
-      ) {
-        $0.value > $1.value
-      }
+      candidates.append((pid: pid, memory: Double(mem)))
     }
+
+    candidates.sort { $0.memory > $1.memory }
     nameCache = nameCache.filter { activePIDs.contains($0.key) }
-    return top
+    guard limit > 0 else { return [] }
+    return candidates.prefix(limit).map { item in
+      RankedProcessMetric(pid: item.pid, name: processName(pid: item.pid), value: item.memory)
+    }
   }
 
   private func processName(pid: Int32) -> String {

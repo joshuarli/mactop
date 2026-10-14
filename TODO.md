@@ -13,15 +13,6 @@ Priorities are assumed from review impact and likelihood. Findings are open; no 
 - **Effort:** M
 - **Design:** [Source-level network accounting](docs/rfc/MAC-2-network-source-accounting.md)
 
-### MAC-9 · P3 · RAM ranking resolves names before selecting retained rows
-
-- **Area:** Performance
-- **Where:** `Sources/mactop/Core/Processes/RAMProcessMemoryReader.swift:26`
-- **Problem:** Each readable PID resolves a process name before sorted insertion discards rows below the limit. Name/path/bundle lookup is unnecessary for rows that never reach the UI. This re-verifies the earlier TODO. No speedup or runtime regression is established, and enumeration correctness must be fixed first.
-- **Recommendation:** Rank PID and memory values first, then resolve only retained names. Verify ranking parity and measure before reporting savings.
-- **Fix with:** make-it-fast, reference-parity
-- **Effort:** S
-
 ### MAC-10 · P3 · Coordinator benchmark peak columns contain endpoint deltas
 
 - **Area:** Performance
