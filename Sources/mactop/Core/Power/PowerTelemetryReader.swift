@@ -17,12 +17,6 @@ public struct PowerUsageDetail: Sendable {
   public var history: [MetricHistoryPoint<PowerHistorySample>]
 }
 
-let maximumReasonablePowerWatts = 2_000.0
-
-func validatedPowerReadingWatts(_ watts: Double) -> Double? {
-  guard watts.isFinite, watts >= 0, watts <= maximumReasonablePowerWatts else { return nil }
-  return watts
-}
 
 public struct PowerHistorySample: Equatable, Sendable {
   public var total: Double

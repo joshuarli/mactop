@@ -13,15 +13,6 @@ Priorities are assumed from review impact and likelihood. Findings are open; no 
 - **Effort:** M
 - **Design:** [Source-level network accounting](docs/rfc/MAC-2-network-source-accounting.md)
 
-### MAC-6 · P2 · Power validation tests exercise an unused production copy
-
-- **Area:** Tests
-- **Where:** `Tests/mactopTests/ProcessReadersTests.swift:106`, `Sources/mactop/Core/Power/PowerTelemetryReader.swift:22`, `Sources/mactop/Platform/PowerTelemetryPlatform.swift:36`
-- **Problem:** The passing validation tests call `validatedPowerReadingWatts`, which has no production callers. Actual power parsing calls the separate private `platformValidatedPower`, with its own 2,000 W limit. Removing or changing the real guard leaves these tests green. A source-wide caller search confirms the split.
-- **Recommendation:** Give power validation one production owner and exercise that owner from the tests. Remove the test-only copy and cover invalid values at the reader boundary.
-- **Fix with:** test-audit, single-source-of-truth
-- **Effort:** S
-
 ### MAC-7 · P2 · The release workflow publishes without running tests
 
 - **Area:** Build

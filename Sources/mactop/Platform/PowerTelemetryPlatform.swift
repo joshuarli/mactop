@@ -33,7 +33,7 @@ public struct PlatformPowerPhaseTiming: Sendable {
 }
 
 private let platformMaximumPowerWatts = 2_000.0
-private func platformValidatedPower(_ watts: Double) -> Double? {
+public func validatedPowerReadingWatts(_ watts: Double) -> Double? {
   watts.isFinite && watts >= 0 && watts <= platformMaximumPowerWatts ? watts : nil
 }
 public final class PlatformModeledPowerReader {
@@ -307,7 +307,7 @@ public final class PlatformModeledPowerReader {
     guard found else { return nil }
     let display = dcpDisplay > 0 ? dcpDisplay : energyDisplay
     let total = cpu + gpu + ane + memory + media + display + other
-    guard total.isFinite, platformValidatedPower(total) != nil else {
+    guard total.isFinite, validatedPowerReadingWatts(total) != nil else {
       return nil
     }
     if debugEnabled, !didLogDebug {
@@ -338,11 +338,11 @@ public final class PlatformModeledPowerReader {
   }
 
   private func rawJoulesToWatts(_ value: Int64, divisor: Double, elapsed: TimeInterval) -> Double? {
-    platformValidatedPower(Double(value) / divisor / elapsed)
+    validatedPowerReadingWatts(Double(value) / divisor / elapsed)
   }
 
   private func microwattSecondsToWatts(_ value: Int64, elapsed: TimeInterval) -> Double? {
-    platformValidatedPower(Double(value) / 1_000_000 / elapsed)
+    validatedPowerReadingWatts(Double(value) / 1_000_000 / elapsed)
   }
 
   private static func cfString(_ pointer: UnsafeRawPointer?) -> String {
@@ -582,7 +582,7 @@ public final class PlatformBatteryPowerReader {
       batteryFraction: batteryFraction,
       wallWatts: numeric(telemetry?["WallEnergyEstimate"]).map { $0 / 1_000 },
       energyConsumedWatts: numeric(telemetry?["SystemEnergyConsumed"]).flatMap {
-        platformValidatedPower(wattsFromMilliwatts($0))
+        validatedPowerReadingWatts(wattsFromMilliwatts($0))
       }
     )
   }
@@ -598,25 +598,25 @@ public final class PlatformBatteryPowerReader {
   {
     if let telemetry {
       if let power = numeric(telemetry["SystemPowerIn"]), power > 0 {
-        return platformValidatedPower(wattsFromMilliwatts(power))
+        return validatedPowerReadingWatts(wattsFromMilliwatts(power))
       }
       if let current = numeric(telemetry["SystemCurrentIn"]),
         let voltage = numeric(telemetry["SystemVoltageIn"]),
         current > 0, voltage > 0
       {
-        return platformValidatedPower(
+        return validatedPowerReadingWatts(
           wattsFromMillivoltsAndMilliamps(voltage: voltage, amperage: current))
       }
       if let power = numeric(telemetry["SystemLoad"]), power > 0 {
-        return platformValidatedPower(wattsFromMilliwatts(power))
+        return validatedPowerReadingWatts(wattsFromMilliwatts(power))
       }
       if let power = numeric(telemetry["BatteryPower"]), power != 0 {
-        return platformValidatedPower(abs(wattsFromMilliwatts(power)))
+        return validatedPowerReadingWatts(abs(wattsFromMilliwatts(power)))
       }
     }
 
     guard voltage > 0, amperage != 0 else { return nil }
-    return platformValidatedPower(
+    return validatedPowerReadingWatts(
       wattsFromMillivoltsAndMilliamps(voltage: voltage, amperage: amperage))
   }
 

@@ -1,5 +1,6 @@
 import XCTest
 
+import mactopPlatform
 @testable import mactopCore
 
 final class RankedMetricInsertionTests: XCTestCase {
