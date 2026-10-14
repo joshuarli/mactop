@@ -13,15 +13,6 @@ Priorities are assumed from review impact and likelihood. Findings are open; no 
 - **Effort:** M
 - **Design:** [Source-level network accounting](docs/rfc/MAC-2-network-source-accounting.md)
 
-### MAC-4 · P2 · The common CPU path never expires cached PID names
-
-- **Area:** Data
-- **Where:** `Sources/mactop/Core/Processes/CPUProcessUsageReader.swift:59`, `Sources/mactop/Core/Processes/CPUProcessUsageReader.swift:64`, `Sources/mactop/Core/Processes/CPUProcessUsageReader.swift:85`
-- **Problem:** The unentitled ps path adds every ranked PID to `nameCache` and returns cached names before checking current process identity. Cache pruning exists only on the native path. Ranked-process churn retains exited entries for the lifetime of the app, and reused PIDs inherit old names. This follows the live ps branch and all cache mutation sites. PID reuse was not reproduced in a running app.
-- **Recommendation:** Resolve the small final ps ranking afresh, or validate a cached entry against process start identity and bound retained entries. Test reuse with a changed identity.
-- **Fix with:** isolate-effects
-- **Effort:** S
-
 ### MAC-5 · P2 · Network chart tooltips format byte rates as percentages
 
 - **Area:** Data

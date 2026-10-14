@@ -77,8 +77,9 @@ public final class CPUProcessUsageReader: @unchecked Sendable {
     task.waitUntilExit()
     guard let output = String(data: data, encoding: .utf8) else { return [] }
     return parsePSProcessOutput(output, count: limit).map { entry in
-      RankedProcessMetric(
-        pid: entry.pid, name: processName(pid: entry.pid, fallback: entry.comm), value: entry.pct)
+      let name = processDisplayName(pid: entry.pid)
+      let resolved = name == "pid \(entry.pid)" && !entry.comm.isEmpty ? entry.comm : name
+      return RankedProcessMetric(pid: entry.pid, name: resolved, value: entry.pct)
     }
   }
 
