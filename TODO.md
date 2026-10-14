@@ -3,15 +3,6 @@ Next: 11
 
 Priorities are assumed from review impact and likelihood. Findings are open; no behavior changes were made.
 
-### MAC-1 · P1 · Process enumeration drops most PIDs
-
-- **Area:** Data
-- **Where:** `Sources/mactop/Platform/ProcessPlatform.swift:43`, `Sources/mactop/Platform/ProcessPlatform.swift:65`, `Sources/mactop/Core/Processes/RAMProcessMemoryReader.swift:10`
-- **Problem:** `proc_listallpids` returns a PID count. Both allocation and copied-length calculations divide it by the size of Int32. The small buffer then appears non-full because the copied count is divided again, so retry never recovers the missing PIDs. A compiled probe using the real platform file observed libproc return 822 entries, 821 positive PIDs, and only 56 PIDs from `allProcessIDs()`. RAM ranking scans that truncated list and can omit the largest processes.
-- **Recommendation:** Use the returned counts directly. Size the buffer in bytes only at the API call. Test complete enumeration and the full-buffer retry path against libproc.
-- **Fix with:** os-boundaries
-- **Effort:** S
-
 ### MAC-2 · P1 · Network process ranking overwrites sockets sharing a PID
 
 - **Area:** Data

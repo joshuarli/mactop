@@ -52,7 +52,7 @@ let package = Package(
         ),
         .testTarget(
             name: "mactopTests",
-            dependencies: ["mactopCore"],
+            dependencies: ["mactopCore", "mactopPlatform"],
             swiftSettings: swift6Settings
         ),
     ]

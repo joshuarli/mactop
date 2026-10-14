@@ -38,9 +38,9 @@ public enum ProcessPlatform {
   }
 
   public static func allProcessIDs() -> [Int32] {
-    let initialBytes = proc_listallpids(nil, 0)
-    guard initialBytes > 0 else { return [] }
-    var capacity = Int(initialBytes) / MemoryLayout<Int32>.size + 16
+    let initialCount = proc_listallpids(nil, 0)
+    guard initialCount >= 0 else { return [] }
+    var capacity = Int(initialCount) + 16
     guard capacity > 16, capacity <= 1_000_000 else { return [] }
     for _ in 0..<3 {
       let outcome = withUnsafeTemporaryAllocation(of: Int32.self, capacity: capacity) {
@@ -62,9 +62,9 @@ public enum ProcessPlatform {
     guard let base = buffer.baseAddress else { return ([], nil) }
     let copied = proc_listallpids(base, Int32(buffer.count * MemoryLayout<Int32>.size))
     guard copied >= 0 else { return ([], nil) }
-    let copiedCount = Int(copied) / MemoryLayout<Int32>.size
+    let copiedCount = Int(copied)
     guard copiedCount < buffer.count else { return ([], copiedCount + 16) }
-    return (buffer.prefix(copiedCount).filter { $0 > 0 }, nil)
+    return (Array(buffer.prefix(copiedCount)).filter { $0 > 0 }, nil)
   }
 
   public static func allDecayCPUPercentages() -> [Int32: UInt32] {
