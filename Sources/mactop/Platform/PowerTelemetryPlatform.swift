@@ -139,9 +139,11 @@ public final class PlatformModeledPowerReader {
   private let sampleInterval: TimeInterval = 2
   private var lastComputedSample: PlatformModeledPowerSample?
   private var lastComputedAt = Date.distantPast
+  public let phaseTimingEnabled: Bool
   private var phaseTotals: [String: UInt64] = [:]
 
-  public init?(updateInterval: Double) {
+  public init?(updateInterval: Double, phaseTimingEnabled: Bool = false) {
+    self.phaseTimingEnabled = phaseTimingEnabled
     maximumSampleInterval = max(5, updateInterval * 2)
     guard let api = Self.loadAPI(),
       let channels = Self.copyPowerChannels(api: api)
@@ -172,7 +174,9 @@ public final class PlatformModeledPowerReader {
   }
 
   public func readModeledPowerSample() -> PlatformModeledPowerSample? {
-    phaseTotals.removeAll(keepingCapacity: true)
+    if phaseTimingEnabled {
+      phaseTotals.removeAll(keepingCapacity: true)
+    }
     let now = Date()
     if let lastComputedSample, now.timeIntervalSince(lastComputedAt) < sampleInterval {
       return lastComputedSample
@@ -210,6 +214,7 @@ public final class PlatformModeledPowerReader {
   }
 
   public func consumePhaseTimings() -> [PlatformPowerPhaseTiming] {
+    guard phaseTimingEnabled else { return [] }
     let result = phaseTotals.map {
       PlatformPowerPhaseTiming(name: $0.key, wallNanoseconds: $0.value)
     }
@@ -218,6 +223,7 @@ public final class PlatformModeledPowerReader {
   }
 
   private func measurePhase<Value>(_ name: String, _ work: () -> Value) -> Value {
+    guard phaseTimingEnabled else { return work() }
     let start = DispatchTime.now().uptimeNanoseconds
     let value = work()
     let duration = DispatchTime.now().uptimeNanoseconds - start

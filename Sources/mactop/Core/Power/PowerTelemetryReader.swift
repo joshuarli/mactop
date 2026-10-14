@@ -195,7 +195,8 @@ public final class PowerTelemetryReader: @unchecked Sendable {
 
   public func readPowerUsageDetail(includeHistory: Bool = false) -> PowerUsageDetail {
     if !modeledPowerReaderAttempted {
-      modeledPowerReader = PlatformModeledPowerReader(updateInterval: updateInterval)
+      modeledPowerReader = PlatformModeledPowerReader(
+        updateInterval: updateInterval, phaseTimingEnabled: phaseRecorder != nil)
       modeledPowerReaderAttempted = true
     }
 

@@ -13,15 +13,6 @@ Priorities are assumed from review impact and likelihood. Findings are open; no 
 - **Effort:** M
 - **Design:** [Source-level network accounting](docs/rfc/MAC-2-network-source-accounting.md)
 
-### MAC-8 · P3 · Modeled power phase timing runs in production
-
-- **Area:** Performance
-- **Where:** `Sources/mactop/Platform/PowerTelemetryPlatform.swift:175`, `Sources/mactop/Platform/PowerTelemetryPlatform.swift:220`
-- **Problem:** `readModeledPowerSample()` clears `phaseTotals` and calls `measurePhase` for samples, deltas, and parsing even when no core recorder is attached. Timing calls and dictionary updates remain on the normal app path. This re-verifies the earlier TODO. The runtime cost has not been measured.
-- **Recommendation:** Pass the instrumentation requirement into the platform reader and skip timing and dictionary work when absent. Measure comparable runs before claiming a speedup.
-- **Fix with:** make-it-fast, benchmark-checklist
-- **Effort:** S
-
 ### MAC-9 · P3 · RAM ranking resolves names before selecting retained rows
 
 - **Area:** Performance
