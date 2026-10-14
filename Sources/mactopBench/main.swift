@@ -273,10 +273,15 @@ private struct MactopBench {
     let baseline = allocationSnapshot()
     let startWall = DispatchTime.now().uptimeNanoseconds
     let startCPU = processCPUTimeNanoseconds()
-    runMainLoop(for: configuration.duration)
+    var peak = baseline
+    let deadline = Date().addingTimeInterval(configuration.duration)
+    while Date() < deadline {
+      let slice = min(0.01, max(0, deadline.timeIntervalSinceNow))
+      RunLoop.main.run(until: Date().addingTimeInterval(slice))
+      peak = higherAllocationSnapshot(peak, allocationSnapshot())
+    }
     let endCPU = processCPUTimeNanoseconds()
     let endWall = DispatchTime.now().uptimeNanoseconds
-    let peak = higherAllocationSnapshot(baseline, allocationSnapshot())
 
     withExtendedLifetime(coordinator) {}
     return BenchResult(

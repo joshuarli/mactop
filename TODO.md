@@ -13,11 +13,3 @@ Priorities are assumed from review impact and likelihood. Findings are open; no 
 - **Effort:** M
 - **Design:** [Source-level network accounting](docs/rfc/MAC-2-network-source-accounting.md)
 
-### MAC-10 · P3 · Coordinator benchmark peak columns contain endpoint deltas
-
-- **Area:** Performance
-- **Where:** `Sources/mactopBench/main.swift:279`, `Sources/mactopBench/main.swift:288`, `Sources/mactopBench/main.swift:160`
-- **Problem:** Coordinator measurement samples memory only before and after its run-loop window, then labels the differences as peaks. Temporary allocations and footprints released before the endpoint cannot appear. Reader scenarios sample after each read, so the identically named columns have different coverage. The refreshed profiling doc states the limitation, but the executable report still hides it.
-- **Recommendation:** Sample coordinator memory during its run loop, or label endpoint deltas distinctly. Add a controlled allocation scenario that rises and falls during the window.
-- **Fix with:** benchmark-checklist, isolate-effects
-- **Effort:** S
