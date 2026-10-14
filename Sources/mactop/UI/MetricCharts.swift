@@ -207,6 +207,9 @@ final class MetricLineChartView: NSView {
   private var cursor: NSPoint? = nil
   private var flipY = false
   private var fixedMax: Double?
+  var tooltipFormatter: (Double) -> String = { value in
+    "\(Int((value * 100).rounded()))%"
+  }
 
   init(
     frame: NSRect = .zero, num: Int, color: NSColor = .controlAccentColor, fixedMax: Double? = nil
@@ -316,7 +319,7 @@ final class MetricLineChartView: NSView {
         hLine.lineWidth = offset
         hLine.stroke()
 
-        let pct = "\(Int((nearest.value * 100).rounded()))%"
+        let pct = tooltipFormatter(nearest.value)
         let attrs: [NSAttributedString.Key: Any] = [
           .font: NSFont.systemFont(ofSize: 12, weight: .regular),
           .foregroundColor: isDarkMode ? NSColor.white : NSColor.textColor,
@@ -502,6 +505,17 @@ final class NetworkThroughputChartView: NSView {
     outChart = MetricLineChartView(frame: topFrame, num: num, color: outColor)
     inChart = MetricLineChartView(frame: bottomFrame, num: num, color: inColor)
     inChart.setVerticalAxisFlipped(true)
+    let byteRateFormatter: (Double) -> String = { value in
+      let b = value.isFinite ? max(0, value) : 0
+      if b < 1_000 { return "0 KB/s" }
+      if b < 1_000_000 { return "\(Int(b / 1_000)) KB/s" }
+      if b < 1_000_000_000 {
+        return MactopFormat.string("%.1f MB/s", b / 1_000_000)
+      }
+      return MactopFormat.string("%.1f GB/s", b / 1_000_000_000)
+    }
+    outChart.tooltipFormatter = byteRateFormatter
+    inChart.tooltipFormatter = byteRateFormatter
     super.init(frame: frame)
     addSubview(outChart)
     addSubview(inChart)

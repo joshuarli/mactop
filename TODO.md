@@ -13,15 +13,6 @@ Priorities are assumed from review impact and likelihood. Findings are open; no 
 - **Effort:** M
 - **Design:** [Source-level network accounting](docs/rfc/MAC-2-network-source-accounting.md)
 
-### MAC-5 · P2 · Network chart tooltips format byte rates as percentages
-
-- **Area:** Data
-- **Where:** `Sources/mactop/UI/MetricCharts.swift:319`, `Sources/mactop/UI/MetricCharts.swift:502`
-- **Problem:** `NetworkThroughputChartView` supplies bytes per second to `MetricLineChartView`. Hover formatting unconditionally multiplies the value by 100 and appends `%`. A 50,000 B/s sample therefore reads `5000000%`. The constructor, history forwarding, and tooltip expression establish the reachable path. Interactive rendering was not exercised.
-- **Recommendation:** Give the shared chart a metric-specific tooltip formatter, with byte-rate formatting for network and percentage formatting for utilization. Check both observable outputs.
-- **Fix with:** api-surface-and-module-boundaries
-- **Effort:** S
-
 ### MAC-6 · P2 · Power validation tests exercise an unused production copy
 
 - **Area:** Tests
