@@ -28,6 +28,9 @@ jobs:
       - name: Build
         run: swift build -c release --product mactop
 
+      - name: Test
+        run: swift test
+
       - name: Package binary
         run: cp .build/release/mactop mactop-aarch64-apple-darwin
 

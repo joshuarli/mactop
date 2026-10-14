@@ -13,15 +13,6 @@ Priorities are assumed from review impact and likelihood. Findings are open; no 
 - **Effort:** M
 - **Design:** [Source-level network accounting](docs/rfc/MAC-2-network-source-accounting.md)
 
-### MAC-7 · P2 · The release workflow publishes without running tests
-
-- **Area:** Build
-- **Where:** `.github/workflows/release.yml:28`, `.github/workflows/release.yml:39`
-- **Problem:** The manually dispatched workflow compiles mactop, uploads the binary, and creates a pre-release. It has no test step or dependency on a test job. A compile-successful regression can ship without executing the existing core tests. The local focused tests pass, so adding a gate does not require fixing a failing baseline first.
-- **Recommendation:** Run the existing core test suite before artifact upload, and make release creation depend on its success. Keep release packaging separate from optional benchmarks.
-- **Fix with:** none
-- **Effort:** S
-
 ### MAC-8 · P3 · Modeled power phase timing runs in production
 
 - **Area:** Performance
