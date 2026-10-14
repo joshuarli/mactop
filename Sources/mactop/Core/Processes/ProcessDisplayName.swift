@@ -1,8 +1,6 @@
 import Foundation
 import mactopPlatform
 
-// Resolves stable display names for process rows, including app bundle and versioned
-// executable fallbacks when the platform process name is implementation-oriented.
 func processDisplayName(pid: Int32) -> String {
   let rawName = ProcessPlatform.processName(pid: pid)
 

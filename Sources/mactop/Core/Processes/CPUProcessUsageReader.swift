@@ -1,19 +1,8 @@
 import Foundation
 import mactopPlatform
 
-// MARK: - CPU process reader
-// Two paths selected once at init by probing root-process telemetry:
-//
-// Native path (com.apple.system-task-ports.read or setuid root):
-//   Same-user procs → nanosecond deltas (true instantaneous %).
-//   Cross-user procs → decay-average percentages (best available natively).
-//
-// PS path (no entitlement — the common case):
-//   Runs /bin/ps -Aceo pid,pcpu,comm -r (setuid root, so sees all processes).
-//   Returns p_pctcpu-based values for every process, consistent across users.
 
 public final class CPUProcessUsageReader: @unchecked Sendable {
-  // Probe cross-user telemetry access once through the platform boundary.
   private let nativeCrossUser = ProcessPlatform.canReadRootProcess()
 
   private var previous: [Int32: (time: UInt64, start: UInt64)] = [:]
@@ -96,7 +85,6 @@ public final class CPUProcessUsageReader: @unchecked Sendable {
   private func processName(pid: Int32, fallback: String = "") -> String {
     if let cached = nameCache[pid] { return cached }
     let name = processDisplayName(pid: pid)
-    // The platform display name returns "pid NNN" when no process name exists; prefer ps comm then.
     let resolved = name == "pid \(pid)" && !fallback.isEmpty ? fallback : name
     nameCache[pid] = resolved
     return resolved

@@ -37,9 +37,6 @@ private func platformValidatedPower(_ watts: Double) -> Double? {
   watts.isFinite && watts >= 0 && watts <= platformMaximumPowerWatts ? watts : nil
 }
 public final class PlatformModeledPowerReader {
-  // Buckets mirror the aggregate-versus-detail-channel rules the parser
-  // applies to Energy Model and DCP groups. Both subscription filtering and
-  // parsePower use these so a renamed channel is treated the same way.
   private enum ModeledBucket {
     case cpu
     case gpu
@@ -139,13 +136,6 @@ public final class PlatformModeledPowerReader {
   private var didLogDebug = false
   private var previousSample: (sample: CFDictionary, time: Date)?
   private let maximumSampleInterval: TimeInterval
-  // Sampling the filtered subscription is the dominant modeled-power cost
-  // (~2.9 ms/tick, mostly a fixed DCP display channel floor). IOReport
-  // counters are accumulated energy, so sampling at half cadence and
-  // reusing the last computed sample between samples loses no accuracy
-  // while cutting the per-tick kernel cost in half. The outer reader keeps
-  // the System total live every tick via AppleSmartBattery; only the
-  // component breakdown refreshes on the slower cadence.
   private let sampleInterval: TimeInterval = 2
   private var lastComputedSample: PlatformModeledPowerSample?
   private var lastComputedAt = Date.distantPast
@@ -330,10 +320,6 @@ public final class PlatformModeledPowerReader {
       cpu: cpu, gpu: gpu, ane: ane, memory: memory, media: media, display: display, other: other)
   }
 
-  // Resolves a delta channel to its bucket and unit divisor. The cache is
-  // keyed on provider and channel id and is always hit because the delta
-  // contains exactly the subscribed channels. The string fallback keeps
-  // modeled power working if a getter changes across a macOS update.
   private func classifiedChannel(item: UnsafeRawPointer, key: ChannelKey) -> (
     bucket: ModeledBucket?, rawUnitDivisor: Double?
   ) {
@@ -461,11 +447,6 @@ public final class PlatformModeledPowerReader {
     let array = Unmanaged<CFArray>.fromOpaque(arrayPtr).takeUnretainedValue()
     let count = CFArrayGetCount(array)
 
-    // Sampling every channel in the Energy Model and DCP groups is the
-    // dominant modeled-power cost. Subscribe only to channels the parser
-    // classifies so the kernel samples and the per-tick parse both see a
-    // small fixed set. classifyChannel is the same rule parsePower uses, so
-    // a renamed channel is ignored exactly as it was before filtering.
     var kept: [UnsafeRawPointer?] = []
     kept.reserveCapacity(count)
     for i in 0..<count {
@@ -491,10 +472,6 @@ public final class PlatformModeledPowerReader {
     return channels
   }
 
-  // Precomputes the per-channel bucket and unit divisor so parsePower avoids
-  // bridging group/subgroup/channel/unit strings on every tick. The cache is
-  // built from the same filtered channel set the subscription uses, so delta
-  // channels always hit it.
   private static func buildChannelCache(api: IOReportAPI, channels: CFMutableDictionary)
     -> [ChannelKey: ChannelEntry]
   {
@@ -550,10 +527,6 @@ public final class PlatformBatteryPowerReader {
     guard service != 0 else { return nil }
     defer { IOObjectRelease(service) }
 
-    // Single-key reads avoid materializing the entire AppleSmartBattery
-    // property tree (~60 keys, ~0.6 ms). Each key we need costs
-    // ~0.005-0.015 ms, so the whole read is ~0.1 ms. Values are
-    // identical to the full-tree read.
     let telemetry = readProperty(service, "PowerTelemetryData") as? [String: Any]
     let externalConnected =
       bool(readProperty(service, "ExternalConnected"))

@@ -1,7 +1,6 @@
 import AppKit
 import mactopCore
 
-// MARK: - Support types
 
 struct ChartSegmentValue {
   let value: Double
@@ -28,8 +27,6 @@ extension String {
   }
 }
 
-// MARK: - MetricPieChartView
-// Closed-circle (CPU/RAM) and open-arc (GPU circles) variants.
 
 final class MetricPieChartView: NSView {
   var id: String = UUID().uuidString
@@ -200,8 +197,6 @@ final class MetricPieChartView: NSView {
   }
 }
 
-// MARK: - MetricLineChartView
-// Faithful port of Stats' MetricLineChartView. Gradient fill below line, tooltip on hover.
 
 final class MetricLineChartView: NSView {
   var id: String = UUID().uuidString
@@ -304,7 +299,6 @@ final class MetricLineChartView: NSView {
       gradient?.draw(in: fillPath, angle: 90)
     }
 
-    // Tooltip on hover
     if let p = cursor, !list.isEmpty {
       if let nearest = list.min(by: { abs($0.point.x - p.x) < abs($1.point.x - p.x) }) {
         let vLine = NSBezierPath()
@@ -387,8 +381,6 @@ final class MetricLineChartView: NSView {
   }
 }
 
-// MARK: - CoreUsageColumnChartView
-// Per-core usage bars. Faithful port of Stats' CoreUsageColumnChartView.
 
 final class CoreUsageColumnChartView: NSView {
   private var values: [ChartSegmentValue] = []
@@ -496,8 +488,6 @@ final class CoreUsageColumnChartView: NSView {
   }
 }
 
-// MARK: - NetworkThroughputChartView
-// Two stacked line charts (upload top / download bottom). Faithful port.
 
 final class NetworkThroughputChartView: NSView {
   private var inChart: MetricLineChartView
@@ -509,7 +499,6 @@ final class NetworkThroughputChartView: NSView {
     let h = max(frame.height, 2)
     let topFrame = NSRect(x: 0, y: h / 2, width: frame.width, height: h / 2)
     let bottomFrame = NSRect(x: 0, y: 0, width: frame.width, height: h / 2)
-    // upload = out = top, download = in = bottom; download flipped (grows downward)
     outChart = MetricLineChartView(frame: topFrame, num: num, color: outColor)
     inChart = MetricLineChartView(frame: bottomFrame, num: num, color: inColor)
     inChart.setVerticalAxisFlipped(true)
@@ -551,7 +540,6 @@ final class NetworkThroughputChartView: NSView {
   }
 }
 
-// MARK: - PowerComponentStackedChartView
 
 final class PowerComponentStackedChartView: NSView {
   private var samples: [MetricHistoryPoint<PowerHistorySample>] = []
@@ -716,7 +704,6 @@ final class PowerComponentStackedChartView: NSView {
   }
 }
 
-// MARK: - BatteryPowerFlowView
 
 final class BatteryPowerFlowView: NSView {
   private var charging: BatteryChargingDetail?
@@ -856,8 +843,6 @@ final class BatteryPowerFlowView: NSView {
   }
 }
 
-// MARK: - ConnectivityHistoryGridChartView
-// Connectivity history grid. Faithful port.
 
 final class ConnectivityHistoryGridChartView: NSView {
   private let okColor: NSColor = .systemGreen

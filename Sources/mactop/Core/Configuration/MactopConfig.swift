@@ -1,9 +1,5 @@
 import Foundation
 
-// Read from ~/Library/Preferences/com.mactop.plist first,
-// then fall back to hardcoded defaults.
-//
-// Configure with: defaults write com.mactop UpdateInterval 2
 
 public struct MactopConfig: Sendable {
   public var updateInterval: Double

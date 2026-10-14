@@ -1,10 +1,5 @@
 import Foundation
 
-// Coordinates timed reads from core metric sources and delivers typed snapshots
-// to the UI without importing AppKit or owning presentation state.
-// Reader state and coordinator flags are confined to their respective serial
-// queues. The unchecked conformance makes that ownership boundary explicit to
-// Swift's concurrency checker when DispatchQueue invokes @Sendable closures.
 public final class SystemMetricsCoordinator: @unchecked Sendable {
   private let cpuReader: CPUUsageReader
   private let ramReader: RAMUsageReader

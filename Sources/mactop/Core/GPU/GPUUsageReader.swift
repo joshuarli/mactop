@@ -1,7 +1,6 @@
 import Foundation
 import mactopPlatform
 
-// Reads GPU, renderer, and tiler utilization from the typed IOKit platform boundary.
 
 public struct GPUUsageDetail: Sendable {
   public var total: Double

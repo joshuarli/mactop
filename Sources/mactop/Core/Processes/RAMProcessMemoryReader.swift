@@ -13,7 +13,6 @@ public final class RAMProcessMemoryReader: @unchecked Sendable {
 
     for pid in pids {
       activePIDs.insert(pid)
-      // Try physical footprint first (matches Activity Monitor); fall back to resident memory.
       let mem: UInt64
       if let ru = processRusage(pid: pid), ru.physicalFootprint > 0 {
         mem = ru.physicalFootprint

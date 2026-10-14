@@ -347,7 +347,6 @@ class MactopAppDelegate: NSObject, NSApplicationDelegate {
     let panels = statusPanels
     let targetPanel = panels[idx]
 
-    // Close others, toggle target
     for (i, panel) in panels.enumerated() {
       if i != idx {
         panel.orderOut(nil)
@@ -373,7 +372,6 @@ class MactopAppDelegate: NSObject, NSApplicationDelegate {
     var x = buttonRect.minX
     var y = buttonRect.minY - panelH - 2
 
-    // Keep within screen bounds
     if x + panelW > screen.visibleFrame.maxX {
       x = screen.visibleFrame.maxX - panelW
     }

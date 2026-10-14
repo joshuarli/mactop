@@ -1,8 +1,6 @@
 import Foundation
 import mactopPlatform
 
-// Reads aggregate CPU utilization, per-core utilization, load averages, and uptime
-// from the platform hardware snapshot, retaining only the recent chart history window.
 public enum CPUCoreKind: Sendable {
   case efficiency
   case performance

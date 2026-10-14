@@ -1,7 +1,6 @@
 import AppKit
 import mactopCore
 
-// MARK: - Popup layout constants
 
 private let popupWidth: CGFloat = 320
 private let sepHeight: CGFloat = 30
@@ -15,7 +14,6 @@ extension Notification.Name {
   static let mactopPauseStateChanged = Notification.Name("mactop.pauseStateChanged")
 }
 
-// MARK: - Shared popup field classes
 
 private final class LabelField: NSTextField {
   init(_ label: String = "", frame: NSRect = .zero) {
@@ -54,7 +52,6 @@ private final class ValueField: NSTextField {
   required init?(coder: NSCoder) { fatalError() }
 }
 
-// MARK: - Popup layout helpers
 
 private func makePopupSectionHeader(_ title: String, width: CGFloat = popupWidth) -> NSView {
   let view = NSView(frame: NSRect(x: 0, y: 0, width: width, height: sepHeight))
@@ -131,7 +128,6 @@ private func addPopupColorValueRow(_ view: NSView, color: NSColor, title: String
   return (dot, lbl, val)
 }
 
-// MARK: - Ranked process list view
 
 private final class RankedProcessListView: NSView {
   private let processCount: Int
@@ -229,7 +225,6 @@ private final class RankedProcessListView: NSView {
   }
 }
 
-// MARK: - Popup value formatting
 
 private let memoryFormatter: ByteCountFormatter = {
   let fmt = ByteCountFormatter()
@@ -266,7 +261,6 @@ private func formatNetworkSpeedValue(_ bytes: Double) -> (String, String) {
   }
 }
 
-// MARK: - MetricPopupPanel
 
 private final class PopupChromeView: NSView {
   private let foreground: NSVisualEffectView
@@ -379,9 +373,6 @@ final class MetricPopupPanel: NSPanel {
   override var canBecomeKey: Bool { true }
 }
 
-// MARK: - CPU Popup
-// Matches Stats CPU popup: dashboard (pie + temp circle + freq circle) +
-// line chart + column chart + details + average load
 
 final class CPUPopupView: NSStackView {
 
@@ -580,8 +571,6 @@ final class CPUPopupView: NSStackView {
   }
 }
 
-// MARK: - RAM Popup
-// Matches Stats RAM popup: dashboard (pie + pressure gauge) + line chart + details
 
 final class RAMPopupView: NSStackView {
 
@@ -771,8 +760,6 @@ final class RAMPopupView: NSStackView {
   }
 }
 
-// MARK: - GPU Popup
-// Matches Stats GPU popup: title row + circles row (utilization/render/tiler) + charts row
 
 final class GPUPopupView: NSStackView {
 
@@ -830,10 +817,6 @@ final class GPUPopupView: NSStackView {
     return view
   }
 
-  // Render/tiler columns are shown only when the driver reports them
-  // independently. On chips that mirror the device value into all three keys
-  // the duplicate graphs would be misleading, so those columns collapse to a
-  // single centered GPU circle and full-width chart.
   private func makeStatsView(showRenderTiler: Bool) -> NSView {
     let labelH: CGFloat = 18
     let circleRowH = circleSize + 20
@@ -996,7 +979,6 @@ final class GPUPopupView: NSStackView {
   }
 }
 
-// MARK: - Power Popup
 
 final class PowerPopupView: NSStackView {
   private let cpuColor = NSColor.systemOrange
@@ -1158,9 +1140,6 @@ final class PowerPopupView: NSStackView {
   }
 }
 
-// MARK: - Network popup
-// Dashboard for upload/download values, usage history, interface details, and
-// details + interface + address
 
 final class NetworkPopupView: NSStackView {
 
@@ -1183,11 +1162,9 @@ final class NetworkPopupView: NSStackView {
   private var totalDownField: ValueField!
   private var statusField: ValueField!
 
-  // Interface section
   private var interfaceField: ValueField!
   private var ifaceStatusField: ValueField!
 
-  // Address section
   private var localIPField: ValueField!
 
   private var netProcessesView: RankedProcessListView!

@@ -1,8 +1,6 @@
 import Foundation
 import mactopPlatform
 
-// Reads aggregate memory pressure, VM usage, swap usage, and RAM chart history
-// from the platform memory snapshot.
 public struct RAMUsageDetail: Sendable {
   public var total: Double
   public var appBytes: UInt64

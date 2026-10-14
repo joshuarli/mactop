@@ -93,7 +93,6 @@ final class CPUProcessUsageDeltaTests: XCTestCase {
   }
 
   func testScalesWithElapsed() {
-    // Same delta, twice the elapsed → half the %
     let pct1 = calculateCPUProcessUsagePercent(
       current: (time: 1_000_000_000, start: 1), previous: (time: 0, start: 1), elapsed: 1.0)
     let pct2 = calculateCPUProcessUsagePercent(
@@ -137,7 +136,6 @@ final class PSProcessOutputParsingTests: XCTestCase {
   }
 
   func testStopsAtZeroPct() {
-    // launchd at 0.0 should not appear
     let results = parsePSProcessOutput(sample, count: 8)
     XCTAssertFalse(results.contains { $0.comm == "launchd" })
   }

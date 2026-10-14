@@ -1,8 +1,6 @@
 import Foundation
 import mactopPlatform
 
-// Combines AppleSmartBattery system-power telemetry with modeled IOReport component
-// energy so the UI can distinguish whole-machine draw from the SoC subtotal.
 
 public struct PowerUsageDetail: Sendable {
   public var total: Double?
@@ -19,9 +17,6 @@ public struct PowerUsageDetail: Sendable {
   public var history: [MetricHistoryPoint<PowerHistorySample>]
 }
 
-// Apple power telemetry and IOReport counters can briefly contain impossible
-// values while the system is waking. Reject them instead of turning a reset
-// or stale counter into a visible multi-kilowatt reading.
 let maximumReasonablePowerWatts = 2_000.0
 
 func validatedPowerReadingWatts(_ watts: Double) -> Double? {
@@ -66,8 +61,6 @@ public struct BatteryChargingDetail: Sendable {
   public var batteryWatts: Double?
   public var batteryFraction: Double?
   public var wallWatts: Double?
-  // SystemEnergyConsumed from IOKit telemetry: actual CPU/GPU/etc consumption,
-  // excludes battery charging power. Preferred over inputWatts for system load display.
   public var energyConsumedWatts: Double?
   public var chargerWatts: Double? {
     guard let inputWatts else { return nil }
@@ -191,7 +184,6 @@ public final class PowerTelemetryReader: @unchecked Sendable {
   }
 
   public func resetAfterWake() {
-    // Preserve history so the chart can show the sleep interval after wake.
     systemOverhead = nil
     lastRawSystem = nil
     current = nil

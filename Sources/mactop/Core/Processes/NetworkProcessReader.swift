@@ -1,7 +1,6 @@
 import Foundation
 import mactopPlatform
 
-// Reads per-process network byte counters from the typed private-ABI platform boundary.
 public final class NetworkProcessReader: @unchecked Sendable {
   private lazy var platformReader = PlatformNetworkProcessReader()
   private var previous: [Int32: (name: String, input: UInt64, output: UInt64)] = [:]

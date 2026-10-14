@@ -3,8 +3,6 @@ import Foundation
 public let metricGraphHistoryWindow: TimeInterval = 5 * 60
 private let metricGraphSmoothingAlpha = 0.3
 
-// Keep real sample timestamps so charts can represent long unavailable spans
-// without allocating one placeholder entry for every missed update.
 public struct MetricHistoryPoint<Value: Sendable>: Sendable {
   public var date: Date
   public var value: Value
@@ -126,5 +124,3 @@ struct PairHistory {
     return output
   }
 }
-
-// MARK: - CPU

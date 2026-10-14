@@ -1,9 +1,6 @@
 import AppKit
 import mactopCore
 
-// MARK: - Percentage status item (CPU / RAM / GPU)
-// Mirrors the reference menu-bar widget: label (7pt light) on top, value (12pt) on bottom,
-// monochrome color = labelColor (white in dark mode, black in light mode).
 func safePercentage(_ value: Double) -> Int {
   guard value.isFinite else { return 0 }
   return Int((min(max(value, 0), 1) * 100).rounded())
@@ -54,15 +51,12 @@ final class PercentageStatusItemView: NSView {
   override func draw(_ dirtyRect: NSRect) {
     let w = bounds.width
 
-    // Label: 7pt light, y=12 from bottom (same coordinates as Stats)
     labelString.draw(with: CGRect(x: 0, y: 12, width: w, height: 7))
 
-    // Value: 12pt regular, y=1 from bottom
     valueString.draw(with: CGRect(x: 0, y: 1, width: w, height: 13))
   }
 }
 
-// MARK: - Power status item
 
 final class PowerStatusItemView: NSView {
   private let labelString: NSAttributedString
@@ -118,10 +112,6 @@ final class PowerStatusItemView: NSView {
   }
 }
 
-// MARK: - Network speed status item
-// Mirrors the reference two-row network widget with icon="dots":
-//   top row = upload (red dot), bottom row = download (blue dot).
-// Dots are colored when traffic ≥ 1024 B/s, labelColor otherwise.
 
 final class NetworkSpeedStatusItemView: NSView {
   private var uploadText = "0 KB/s"
@@ -164,30 +154,25 @@ final class NetworkSpeedStatusItemView: NSView {
   required init?(coder: NSCoder) { fatalError() }
 
   override func draw(_ dirtyRect: NSRect) {
-    let h = bounds.height  // ~18px
-    let rowH = h / 2  // ~9px
+    let h = bounds.height
+    let rowH = h / 2
     let dotSize: CGFloat = 6
-    let dotY = (rowH - dotSize) / 2  // centers dot in its half-row
+    let dotY = (rowH - dotSize) / 2
 
-    // Upload dot (top half): y=10.5 — matches Stats' hardcoded value
     let upColor: NSColor = upload >= 1024 ? .systemRed : .labelColor
     upColor.setFill()
     NSBezierPath(ovalIn: CGRect(x: 0, y: 10.5, width: dotSize, height: dotSize)).fill()
 
-    // Download dot (bottom half): y=dotY-0.2
     let downColor: NSColor = download >= 1024 ? .systemBlue : .labelColor
     downColor.setFill()
     NSBezierPath(ovalIn: CGRect(x: 0, y: dotY - 0.2, width: dotSize, height: dotSize)).fill()
 
-    // Values: 9pt light, right-aligned, starting at x=7 (after dots)
     let textX: CGFloat = 7
     let textW = bounds.width - textX
 
-    // Upload top row: y = rowH + 1
     NSAttributedString(string: uploadText, attributes: Self.textAttrs)
       .draw(with: CGRect(x: textX, y: rowH + 1, width: textW, height: rowH))
 
-    // Download bottom row: y = 1
     NSAttributedString(string: downloadText, attributes: Self.textAttrs)
       .draw(with: CGRect(x: textX, y: 1, width: textW, height: rowH))
   }
