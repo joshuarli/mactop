@@ -17,10 +17,10 @@ jobs:
       actions: write
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7 # v7.0.1
 
       - name: Cache .build
-        uses: actions/cache@v6
+        uses: actions/cache@v6 # v6.0.0
         with:
           path: .build
           key: build-${{ runner.os }}-${{ hashFiles('Package.swift') }}
@@ -34,7 +34,7 @@ jobs:
       - name: Package binary
         run: cp .build/release/mactop mactop-aarch64-apple-darwin
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7 # v7.0.2
         with:
           name: mactop-aarch64-apple-darwin
           path: mactop-aarch64-apple-darwin
