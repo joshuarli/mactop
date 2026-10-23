@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 
 public struct PlatformNetworkProcessCounter: Sendable {
+  public let sourceID: UUID
   public let pid: Int32
   public let name: String
   public let inputBytes: UInt64
@@ -26,19 +27,6 @@ public final class PlatformNetworkProcessReader: @unchecked Sendable {
   private typealias QueryDescriptionFn =
     @convention(c) (UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer?
 
-  private struct Source {
-    var pid: Int32
-    var name: String
-    var input: UInt64
-    var output: UInt64
-  }
-
-  private struct Update: @unchecked Sendable {
-    let pid: Int32?
-    let name: String?
-    let input: UInt64?
-    let output: UInt64?
-  }
   private let queue = DispatchQueue(label: "mactop.network-statistics")
   private let stateLock = NSLock()
   private let handle: UnsafeMutableRawPointer
@@ -52,7 +40,7 @@ public final class PlatformNetworkProcessReader: @unchecked Sendable {
   private let nameKey: CFString
   private let inputKey: CFString
   private let outputKey: CFString
-  private var sources: [UInt: Source] = [:]
+  private var sources = NetworkSourceStore()
   private var sourceBlock:
     (@convention(block) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Void)!
   private var descriptionBlocks: [UInt: @convention(block) (CFDictionary?) -> Void] = [:]
@@ -98,14 +86,18 @@ public final class PlatformNetworkProcessReader: @unchecked Sendable {
     self.manager = manager
     onSource = { [weak self] source in
       guard let self, let source else { return }
+      dispatchPrecondition(condition: .onQueue(self.queue))
       let key = UInt(bitPattern: source)
+      let sourceID = self.sources.register(key: key)
       let description: @convention(block) (CFDictionary?) -> Void = { [weak self] dictionary in
-        self?.update(key: key, dictionary: dictionary)
+        self?.update(key: key, sourceID: sourceID, dictionary: dictionary)
       }
       let counts: @convention(block) (CFDictionary?) -> Void = { [weak self] dictionary in
-        self?.update(key: key, dictionary: dictionary)
+        self?.update(key: key, sourceID: sourceID, dictionary: dictionary)
       }
-      let removed: @convention(block) () -> Void = { [weak self] in self?.removeSource(key: key) }
+      let removed: @convention(block) () -> Void = { [weak self] in
+        self?.removeSource(key: key, sourceID: sourceID)
+      }
       self.stateLock.lock()
       self.descriptionBlocks[key] = description
       self.countBlocks[key] = counts
@@ -141,47 +133,29 @@ public final class PlatformNetworkProcessReader: @unchecked Sendable {
   }
 
   public func counters() -> [PlatformNetworkProcessCounter] {
-    queue.sync {
-      sources.values.filter { $0.pid > 0 }.map {
-        PlatformNetworkProcessCounter(
-          pid: $0.pid, name: $0.name, inputBytes: $0.input, outputBytes: $0.output)
-      }
-    }
+    queue.sync { sources.takeSnapshot() }
   }
 
-  private func update(key: UInt, dictionary: CFDictionary?) {
+  private func update(key: UInt, sourceID: UUID, dictionary: CFDictionary?) {
     guard let dictionary else { return }
     let values = dictionary as NSDictionary
-    let update = Update(
+    dispatchPrecondition(condition: .onQueue(queue))
+    sources.update(
+      key: key, sourceID: sourceID,
       pid: (values[pidKey] as? NSNumber)?.int32Value,
       name: values[nameKey] as? String,
       input: (values[inputKey] as? NSNumber)?.uint64Value,
       output: (values[outputKey] as? NSNumber)?.uint64Value)
-    queue.async { [weak self] in
-      self?.mergeUpdate(key: key, update: update)
-    }
   }
 
-  private func mergeUpdate(key: UInt, update: Update) {
-    let old = sources[key]
-    let pid = update.pid ?? old?.pid ?? 0
-    guard pid > 0 else { return }
-    sources[key] = Source(
-      pid: pid, name: update.name ?? old?.name ?? "",
-      input: update.input ?? old?.input ?? 0,
-      output: update.output ?? old?.output ?? 0)
-  }
-
-  private func removeSource(key: UInt) {
-    queue.async { [weak self] in
-      guard let self else { return }
-      self.stateLock.lock()
-      self.sources.removeValue(forKey: key)
-      self.descriptionBlocks.removeValue(forKey: key)
-      self.countBlocks.removeValue(forKey: key)
-      self.removedBlocks.removeValue(forKey: key)
-      self.stateLock.unlock()
-    }
+  private func removeSource(key: UInt, sourceID: UUID) {
+    dispatchPrecondition(condition: .onQueue(queue))
+    guard sources.remove(key: key, sourceID: sourceID) else { return }
+    stateLock.lock()
+    descriptionBlocks.removeValue(forKey: key)
+    countBlocks.removeValue(forKey: key)
+    removedBlocks.removeValue(forKey: key)
+    stateLock.unlock()
   }
 
   private static func load<T>(_ handle: UnsafeMutableRawPointer, _ name: String) -> T? {

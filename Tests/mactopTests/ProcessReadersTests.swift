@@ -1,6 +1,6 @@
 import XCTest
 
-import mactopPlatform
+@testable import mactopPlatform
 @testable import mactopCore
 
 final class RankedMetricInsertionTests: XCTestCase {
@@ -184,5 +184,26 @@ final class NetworkCounterRateTests: XCTestCase {
   func testInitialCounterAndInvalidElapsedProduceZero() {
     XCTAssertEqual(networkCounterRate(current: 1_000, previous: 0, elapsed: 1), 0)
     XCTAssertEqual(networkCounterRate(current: 1_000, previous: 500, elapsed: 0), 0)
+  }
+}
+
+final class NetworkProcessAccountingTests: XCTestCase {
+  func testCombinesSocketsForOnePID() {
+    var accounting = NetworkProcessAccounting()
+    let first = UUID()
+    let second = UUID()
+    let baseline = [
+      PlatformNetworkProcessCounter(sourceID: first, pid: 42, name: "browser", inputBytes: 100, outputBytes: 0),
+      PlatformNetworkProcessCounter(sourceID: second, pid: 42, name: "browser", inputBytes: 200, outputBytes: 0),
+    ]
+    XCTAssertTrue(accounting.metrics(counters: baseline, elapsed: 1, limit: 8).isEmpty)
+    let current = [
+      PlatformNetworkProcessCounter(sourceID: first, pid: 42, name: "browser", inputBytes: 1_000_100, outputBytes: 0),
+      PlatformNetworkProcessCounter(sourceID: second, pid: 42, name: "browser", inputBytes: 201, outputBytes: 0),
+    ]
+    let rows = accounting.metrics(counters: current, elapsed: 1, limit: 8)
+    XCTAssertEqual(rows.count, 1)
+    XCTAssertEqual(rows.first?.pid, 42)
+    XCTAssertEqual(rows.first?.value, 1_000_001)
   }
 }

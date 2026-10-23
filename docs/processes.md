@@ -30,9 +30,18 @@ It loads `/System/Library/PrivateFrameworks/NetworkStatistics.framework/NetworkS
 Missing symbols, manager creation failure, or failed source registration leave ranking empty.
 
 The platform file owns the exact `NStat*` symbols and `kNStatSrcKey*` keys loaded with `dlsym`.
-Description and count callbacks can arrive separately or omit PID/name. The platform merges dictionaries by source pointer.
+Description and count callbacks can arrive separately or omit PID/name. The platform merges dictionaries within each source lifetime, preserving counts received before the description.
 TCP and UDP registration accept nonnegative return values, including positive success values.
 The dynamically loaded image stays resident because no documented manager-destroy API guarantees callbacks have stopped.
 
 A refresh waits up to 750 ms, then reads stored counters even if completion timed out.
-Current ranking has correctness defects tracked in [TODO.md](../TODO.md).
+`PlatformNetworkProcessCounter.sourceID` identifies a registered source lifetime with a UUID, independent of pointer reuse.
+The reader computes deltas per source, then combines rates by PID before ranking.
+New sources and changes of PID establish baselines. A decrease in either byte counter resets both baselines.
+Snapshot order and socket removal do not affect surviving sources' deltas.
+
+Callbacks update state directly on the NetworkStatistics serial queue. Snapshot reads synchronize on that queue.
+The platform retains a removed source's last available counters until the next snapshot, which consumes them once.
+Only previously sampled sources need removal records, bounding retained records by the preceding snapshot's active sources.
+The removal callback carries no counters. Traffic after the last count callback can therefore be unavailable.
+See [the source accounting decision](rfc/MAC-2-network-source-accounting.md).

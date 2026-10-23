@@ -3,37 +3,50 @@ import mactopPlatform
 
 public final class NetworkProcessReader: @unchecked Sendable {
   private lazy var platformReader = PlatformNetworkProcessReader()
-  private var previous: [Int32: (name: String, input: UInt64, output: UInt64)] = [:]
+  private var accounting = NetworkProcessAccounting()
   private var previousTime = Date.distantPast
 
   public init() {}
 
   public func readTopNetworkProcessMetrics(count limit: Int = 8) -> [RankedProcessMetric] {
     guard let platformReader else { return [] }
+    platformReader.refresh()
+    let counters = platformReader.counters()
     let now = Date()
     let elapsed = now.timeIntervalSince(previousTime)
-    platformReader.refresh()
-    let current: [Int32: (name: String, input: UInt64, output: UInt64)] = platformReader.counters()
-      .reduce(into: [:]) { result, counter in
-        result[counter.pid] = (counter.name, counter.inputBytes, counter.outputBytes)
-      }
-    defer {
-      previous = current
-      previousTime = now
-    }
-    guard elapsed > 0, !previous.isEmpty else { return [] }
-    var top: [(pid: Int32, rate: Double)] = []
-    for (pid, value) in current {
-      guard let old = previous[pid] else { continue }
-      let input = value.input >= old.input ? value.input - old.input : 0
-      let output = value.output >= old.output ? value.output - old.output : 0
-      let rate = (Double(input) + Double(output)) / elapsed
+    defer { previousTime = now }
+    return accounting.metrics(counters: counters, elapsed: elapsed, limit: limit)
+  }
+}
+
+struct NetworkProcessAccounting {
+  private var previous: [UUID: PlatformNetworkProcessCounter] = [:]
+
+  mutating func metrics(
+    counters: [PlatformNetworkProcessCounter], elapsed: TimeInterval, limit: Int
+  ) -> [RankedProcessMetric] {
+    defer { previous = Dictionary(uniqueKeysWithValues: counters.map { ($0.sourceID, $0) }) }
+    guard elapsed.isFinite, elapsed > 0 else { return [] }
+    var processes: [Int32: RankedProcessMetric] = [:]
+    for counter in counters {
+      guard let old = previous[counter.sourceID], old.pid == counter.pid,
+        counter.inputBytes >= old.inputBytes, counter.outputBytes >= old.outputBytes
+      else { continue }
+      let bytes = Double(counter.inputBytes - old.inputBytes)
+        + Double(counter.outputBytes - old.outputBytes)
+      let rate = bytes / elapsed
       guard rate.isFinite, rate > 0 else { continue }
-      insertRankedMetric((pid: pid, rate: rate), into: &top, count: limit) { $0.rate > $1.rate }
+      let total = (processes[counter.pid]?.value ?? 0) + rate
+      let name = counter.name.isEmpty ? processes[counter.pid]?.name ?? "" : counter.name
+      processes[counter.pid] = RankedProcessMetric(
+        pid: counter.pid, name: name, value: total)
     }
-    return top.compactMap { item in
-      guard let name = current[item.pid]?.name, !name.isEmpty else { return nil }
-      return RankedProcessMetric(pid: item.pid, name: name, value: item.rate)
+    var top: [RankedProcessMetric] = []
+    for metric in processes.values where !metric.name.isEmpty {
+      insertRankedMetric(metric, into: &top, count: limit) {
+        $0.value == $1.value ? $0.pid < $1.pid : $0.value > $1.value
+      }
     }
+    return top
   }
 }
