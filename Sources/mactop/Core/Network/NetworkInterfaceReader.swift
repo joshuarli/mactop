@@ -18,7 +18,7 @@ public struct NetworkUsageDetail: Sendable {
 }
 
 public final class NetworkInterfaceReader: @unchecked Sendable {
-  private let platformReader = NetworkInterfacePlatform()
+  private let readSnapshot: @Sendable () -> PlatformNetworkInterfaceSnapshot?
   private var previousUp: UInt64 = 0
   private var previousDown: UInt64 = 0
   private var cumulativeUp: UInt64 = 0
@@ -26,7 +26,16 @@ public final class NetworkInterfaceReader: @unchecked Sendable {
   private var lastTime = Date()
   private var history: PairHistory
 
-  public init(updateInterval: Double = 1) {
+  public convenience init(updateInterval: Double = 1) {
+    let platform = NetworkInterfacePlatform()
+    self.init(updateInterval: updateInterval) { platform.read() }
+  }
+
+  init(
+    updateInterval: Double = 1,
+    readSnapshot: @escaping @Sendable () -> PlatformNetworkInterfaceSnapshot?
+  ) {
+    self.readSnapshot = readSnapshot
     history = PairHistory(capacity: metricGraphSampleCapacity(updateInterval: updateInterval))
   }
 
@@ -41,7 +50,7 @@ public final class NetworkInterfaceReader: @unchecked Sendable {
 
   public func readNetworkUsageDetail(includeHistory: Bool = false) -> NetworkUsageDetail {
     let now = Date()
-    guard let snapshot = platformReader.read() else {
+    guard let snapshot = readSnapshot() else {
       return detail(includeHistory: includeHistory)
     }
     let elapsed = now.timeIntervalSince(lastTime)
@@ -49,12 +58,10 @@ public final class NetworkInterfaceReader: @unchecked Sendable {
       current: snapshot.uploadBytes, previous: previousUp, elapsed: elapsed)
     let download = networkCounterRate(
       current: snapshot.downloadBytes, previous: previousDown, elapsed: elapsed)
-    if snapshot.uploadBytes >= previousUp {
-      cumulativeUp = saturatingAdd(cumulativeUp, snapshot.uploadBytes - previousUp)
-    }
-    if snapshot.downloadBytes >= previousDown {
-      cumulativeDown = saturatingAdd(cumulativeDown, snapshot.downloadBytes - previousDown)
-    }
+    cumulativeUp = networkSessionTotal(
+      current: snapshot.uploadBytes, previous: previousUp, total: cumulativeUp)
+    cumulativeDown = networkSessionTotal(
+      current: snapshot.downloadBytes, previous: previousDown, total: cumulativeDown)
     previousUp = snapshot.uploadBytes
     previousDown = snapshot.downloadBytes
     lastTime = now
@@ -79,6 +86,11 @@ func networkCounterRate(current: UInt64, previous: UInt64, elapsed: TimeInterval
   guard elapsed > 0, previous > 0, current >= previous else { return 0 }
   let rate = Double(current - previous) / elapsed
   return rate.isFinite ? rate : 0
+}
+
+func networkSessionTotal(current: UInt64, previous: UInt64, total: UInt64) -> UInt64 {
+  guard previous > 0, current >= previous else { return total }
+  return saturatingAdd(total, current - previous)
 }
 
 private func saturatingAdd(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {

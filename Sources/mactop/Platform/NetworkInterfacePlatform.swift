@@ -33,11 +33,16 @@ public final class NetworkInterfacePlatform: @unchecked Sendable {
     let now = Date()
     let preferred = activePrimaryInterfaceName()
     let refresh = now.timeIntervalSince(detailsLastRead) >= 15
+    guard let counters = loadInterfaceCounters() else { return nil }
+    var up: UInt64 = 0
+    var down: UInt64 = 0
+    for (name, counter) in counters where name.hasPrefix("en") {
+      up = saturatingAdd(up, counter.outputBytes)
+      down = saturatingAdd(down, counter.inputBytes)
+    }
     var ifap: UnsafeMutablePointer<ifaddrs>?
     guard getifaddrs(&ifap) == 0, let head = ifap else { return nil }
     defer { freeifaddrs(head) }
-    var up: UInt64 = 0
-    var down: UInt64 = 0
     var links: [String: (Bool, String, Double)] = [:]
     var ips: [String: String] = [:]
     var firstLink = ""
@@ -47,13 +52,7 @@ public final class NetworkInterfacePlatform: @unchecked Sendable {
       defer { cursor = iface.pointee.ifa_next }
       let name = decodeCString(iface.pointee.ifa_name)
       guard name.hasPrefix("en") else { continue }
-      if let address = iface.pointee.ifa_addr,
-        address.pointee.sa_family == UInt8(AF_LINK),
-        let raw = iface.pointee.ifa_data
-      {
-        let data = raw.assumingMemoryBound(to: if_data.self).pointee
-        up = saturatingAdd(up, UInt64(data.ifi_obytes))
-        down = saturatingAdd(down, UInt64(data.ifi_ibytes))
+      if let address = iface.pointee.ifa_addr, address.pointee.sa_family == UInt8(AF_LINK) {
         if refresh {
           var mac = ""
           address.withMemoryRebound(to: sockaddr_dl.self, capacity: 1) { pointer in
@@ -64,10 +63,9 @@ public final class NetworkInterfacePlatform: @unchecked Sendable {
               }
             }
           }
+          let baudrate = counters[name]?.baudrate ?? 0
           links[name] = (
-            (iface.pointee.ifa_flags & UInt32(IFF_UP)) != 0, mac,
-            Double(data.ifi_baudrate) / 1_000_000
-          )
+            (iface.pointee.ifa_flags & UInt32(IFF_UP)) != 0, mac, Double(baudrate) / 1_000_000)
           if firstLink.isEmpty { firstLink = name }
         }
       }
@@ -167,4 +165,72 @@ public final class NetworkInterfacePlatform: @unchecked Sendable {
     let (value, overflow) = lhs.addingReportingOverflow(rhs)
     return overflow ? .max : value
   }
+
+  private func loadInterfaceCounters() -> [String: InterfaceData64Counters]? {
+    var mib: [Int32] = [CTL_NET, PF_ROUTE, 0, 0, NET_RT_IFLIST2, 0]
+    var size = 0
+    guard sysctl(&mib, 6, nil, &size, nil, 0) == 0, size > 0 else { return nil }
+    for _ in 0..<3 {
+      let loaded = withUnsafeTemporaryAllocation(of: UInt8.self, capacity: size) { buffer in
+        var actual = buffer.count
+        guard let base = buffer.baseAddress else { return InterfaceCounterLoad.failed }
+        guard sysctl(&mib, 6, base, &actual, nil, 0) == 0 else {
+          return errno == ENOMEM ? InterfaceCounterLoad.retry : InterfaceCounterLoad.failed
+        }
+        guard actual >= 0, actual <= buffer.count else { return InterfaceCounterLoad.failed }
+        return InterfaceCounterLoad.ready(
+          interfaceData64Counters(in: UnsafeRawBufferPointer(start: base, count: actual)))
+      }
+      switch loaded {
+      case .ready(let counters): return counters
+      case .failed: return nil
+      case .retry:
+        guard sysctl(&mib, 6, nil, &size, nil, 0) == 0, size > 0 else { return nil }
+      }
+    }
+    return nil
+  }
+}
+
+private enum InterfaceCounterLoad {
+  case ready([String: InterfaceData64Counters])
+  case retry
+  case failed
+}
+
+struct InterfaceData64Counters {
+  var inputBytes: UInt64
+  var outputBytes: UInt64
+  var baudrate: UInt64
+}
+
+func interfaceData64Counters(in buffer: UnsafeRawBufferPointer) -> [String: InterfaceData64Counters] {
+  var counters: [String: InterfaceData64Counters] = [:]
+  let headerSize = MemoryLayout<if_msghdr2>.size
+  var offset = 0
+  while offset + 4 <= buffer.count {
+    let length = Int(buffer.loadUnaligned(fromByteOffset: offset, as: UInt16.self))
+    let type = buffer.loadUnaligned(fromByteOffset: offset + 3, as: UInt8.self)
+    guard length >= 4, offset + length <= buffer.count else { break }
+    if type == UInt8(RTM_IFINFO2), length >= headerSize,
+      let name = interfaceName(in: buffer, range: (offset + headerSize)..<(offset + length))
+    {
+      let header = buffer.loadUnaligned(fromByteOffset: offset, as: if_msghdr2.self)
+      counters[name] = InterfaceData64Counters(
+        inputBytes: header.ifm_data.ifi_ibytes, outputBytes: header.ifm_data.ifi_obytes,
+        baudrate: header.ifm_data.ifi_baudrate)
+    }
+    offset += length
+  }
+  return counters
+}
+
+private func interfaceName(in buffer: UnsafeRawBufferPointer, range: Range<Int>) -> String? {
+  guard range.count >= 8 else { return nil }
+  let family = buffer.loadUnaligned(fromByteOffset: range.lowerBound + 1, as: UInt8.self)
+  let length = Int(buffer.loadUnaligned(fromByteOffset: range.lowerBound + 5, as: UInt8.self))
+  let data = range.lowerBound + 8
+  guard family == UInt8(AF_LINK), length > 0, data + length <= range.upperBound else { return nil }
+  let bytes = UnsafeRawBufferPointer(rebasing: buffer[data..<(data + length)])
+  return String(decoding: bytes, as: UTF8.self)
 }

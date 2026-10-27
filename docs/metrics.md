@@ -28,8 +28,9 @@ Keep those observations in mind when comparing polling tools. They have not been
 
 ## Network
 
-Totals sum byte counters for all `en*` interfaces through `getifaddrs`.
+Totals sum 64-bit `if_data64` byte counters for all `en*` interfaces from `NET_RT_IFLIST2`.
 Metadata uses SystemConfiguration's active IPv4 `PrimaryInterface`, so the displayed interface need not account for all aggregate traffic.
-IP, SSID, MAC, and link metadata refresh about every fifteen seconds.
+IP, SSID, MAC, and link flags come from `getifaddrs` and refresh about every fifteen seconds. Link speed uses the 64-bit baudrate.
 Initial rate samples, counter resets, and invalid elapsed times produce zero rates.
+Session totals do the same while the stored counter is zero: the first sample, the sample after a cleared session, and the sample after a counter resets to zero are baselines.
 The reader makes no external network requests.
