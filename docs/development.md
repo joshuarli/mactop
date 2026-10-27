@@ -16,7 +16,7 @@ For another focused test, select its XCTest class from [ProcessReadersTests.swif
 Those tests cover ranking, CPU deltas, power validation, ps parsing, and network counter rates.
 They do not exercise live readers, private callbacks, the coordinator, or AppKit views.
 
-`make lint` is not configured (linter package removed). There is no `make fmtlint`.
+`make lint` is not configured (linter package removed). The Makefile has no format target.
 
 ## Install from source
 
@@ -42,4 +42,4 @@ make clean
 The [release workflow](../.github/workflows/release.yml) runs manually through `workflow_dispatch`.
 It builds the release mactop product on the `xcode-27` runner and publishes a ZIP as a GitHub pre-release tagged `release-<commit>`.
 The workflow packages a bare executable, not the app bundle or LaunchAgent created by `make install`.
-It does not run tests or lint, sign the binary, or notarize it.
+It runs `swift test` before publishing the artifact. It does not lint, sign the binary, or notarize it.

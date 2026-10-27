@@ -53,4 +53,3 @@ The first sample establishes a baseline. A gap beyond `max(5, updateInterval * 2
 Set `MACTOP_DEBUG_POWER=1` when launching to log matched channels once after the first valid delta.
 Set `MACTOP_DEBUG_BATTERY=1` to log battery telemetry once.
 Recheck channel coverage after macOS or chip changes. These undocumented interfaces have no stability guarantee.
-Platform IOReport phase timing currently runs even without a core phase recorder. See [open findings](../TODO.md).

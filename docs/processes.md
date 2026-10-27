@@ -44,4 +44,3 @@ Callbacks update state directly on the NetworkStatistics serial queue. Snapshot 
 The platform retains a removed source's last available counters until the next snapshot, which consumes them once.
 Only previously sampled sources need removal records, bounding retained records by the preceding snapshot's active sources.
 The removal callback carries no counters. Traffic after the last count callback can therefore be unavailable.
-See [the source accounting decision](rfc/MAC-2-network-source-accounting.md).

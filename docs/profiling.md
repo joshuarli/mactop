@@ -47,7 +47,7 @@ Thread CPU omits work on NetworkStatistics callback queues. Compare CPU only wit
 
 Power and GPU report summed wall-clock phase durations and counts. Phase time is not CPU time.
 GPU currently records `ioaccelerator.properties` and history append, not separate service-lookup or history-snapshot phases.
-Instrumentation adds overhead. The platform's IOReport timing is currently unconditional even when the core recorder is absent.
+Instrumentation adds overhead. IOReport phase timing runs only when a core phase recorder is attached, which `make bench` does and the app does not.
 
 ## Compare changes
 
