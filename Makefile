@@ -13,20 +13,10 @@ BENCH_INTERVAL     ?= 1
 BENCH_WARMUP_TICKS ?= 2
 BENCH_PROCESS_COUNT ?= 8
 BENCH_COORDINATOR_HISTORY ?= 0
-BYLAWS_URL ?= https://github.com/joshuarli/swift-bylaws/releases/download/release-a70d7a346b898f0e2ba376beb9d0a659c2984608/bylaws-aarch64-apple-darwin.zip
-BYLAWS_BIN = .build/bylaws/bylaws
-
 .PHONY: build bench app install uninstall clean lint
 
-lint: $(BYLAWS_BIN)
-	$(BYLAWS_BIN) lint
-
-$(BYLAWS_BIN):
-	mkdir -p .build/bylaws
-	curl -fL -o .build/bylaws.zip "$(BYLAWS_URL)"
-	unzip -o -q .build/bylaws.zip -d .build/bylaws
-	chmod +x $(BYLAWS_BIN)
-	rm .build/bylaws.zip
+lint:
+	bylaws lint
 
 dev: build
 	.build/debug/mactop

@@ -18,12 +18,19 @@ defaults:
 jobs:
   lint:
     name: lint
-    runs-on: ubuntu-latest
+    runs-on: macos-26
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install bylaws
+        run: |
+          mkdir -p ~/.local/bin
+          curl -fSL -o /tmp/bylaws.zip https://github.com/joshuarli/swift-bylaws/releases/download/release-a70d7a346b898f0e2ba376beb9d0a659c2984608/bylaws-aarch64-apple-darwin.zip
+          unzip -p /tmp/bylaws.zip bylaws > ~/.local/bin/bylaws
+          chmod +x ~/.local/bin/bylaws
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
       - name: lint
         run: make lint
