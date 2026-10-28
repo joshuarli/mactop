@@ -16,7 +16,7 @@ For another focused test, select its XCTest class from [ProcessReadersTests.swif
 Those tests cover ranking, CPU deltas, power validation, ps parsing, and network counter rates.
 They do not exercise live readers, private callbacks, the coordinator, or AppKit views.
 
-`make lint` is not configured (linter package removed). The Makefile has no format target.
+`make lint` checks architectural rules with Bylaws: layer direction, UI-free Core and Platform, final classes, checked concurrency, no task sleep, no print. The Makefile has no format target.
 
 ## Install from source
 

@@ -17,7 +17,8 @@ BENCH_COORDINATOR_HISTORY ?= 0
 .PHONY: build bench app install uninstall clean lint
 
 lint:
-	@true
+	@command -v bylaws >/dev/null || { echo "bylaws not installed: brew install theblixguy/tap/bylaws"; exit 2; }
+	bylaws lint
 
 dev: build
 	.build/debug/mactop

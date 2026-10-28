@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import IOKit
+import Synchronization
 
 public struct PlatformModeledPowerSample: Sendable {
   public let cpu: Double
@@ -521,9 +522,9 @@ public final class PlatformModeledPowerReader {
   }
 }
 
-public final class PlatformBatteryPowerReader {
+public final class PlatformBatteryPowerReader: Sendable {
   private let debugEnabled = ProcessInfo.processInfo.environment["MACTOP_DEBUG_BATTERY"] == "1"
-  private var didLogDebug = false
+  private let didLogDebug = Mutex(false)
 
   public init() {}
 
@@ -549,8 +550,12 @@ public final class PlatformBatteryPowerReader {
       ?? numeric(readProperty(service, "Amperage"))
       ?? 0
 
-    if debugEnabled, !didLogDebug {
-      didLogDebug = true
+    let shouldLogDebug = didLogDebug.withLock { logged in
+      guard debugEnabled, !logged else { return false }
+      logged = true
+      return true
+    }
+    if shouldLogDebug {
       var rows: [String] = ["mactop battery telemetry:"]
       if let telemetry {
         for (k, v) in telemetry.sorted(by: { $0.key < $1.key }) {

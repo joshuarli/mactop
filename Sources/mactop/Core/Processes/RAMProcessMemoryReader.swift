@@ -1,8 +1,12 @@
 import Foundation
+import Synchronization
 import mactopPlatform
 
-public final class RAMProcessMemoryReader: @unchecked Sendable {
-  private var nameCache: [Int32: String] = [:]
+public final class RAMProcessMemoryReader: Sendable {
+  private struct State: Sendable {
+    var nameCache: [Int32: String] = [:]
+  }
+  private let state = Mutex(State())
 
   public init() {}
 
@@ -26,18 +30,19 @@ public final class RAMProcessMemoryReader: @unchecked Sendable {
     }
 
     candidates.sort { $0.memory > $1.memory }
-    nameCache = nameCache.filter { activePIDs.contains($0.key) }
     guard limit > 0 else { return [] }
-    return candidates.prefix(limit).map { item in
-      RankedProcessMetric(pid: item.pid, name: processName(pid: item.pid), value: item.memory)
+    return state.withLock { s in
+      s.nameCache = s.nameCache.filter { activePIDs.contains($0.key) }
+      return candidates.prefix(limit).map { item in
+        let name: String
+        if let cached = s.nameCache[item.pid] {
+          name = cached
+        } else {
+          name = processDisplayName(pid: item.pid)
+          s.nameCache[item.pid] = name
+        }
+        return RankedProcessMetric(pid: item.pid, name: name, value: item.memory)
+      }
     }
-  }
-
-  private func processName(pid: Int32) -> String {
-    if let cached = nameCache[pid] { return cached }
-
-    let name = processDisplayName(pid: pid)
-    nameCache[pid] = name
-    return name
   }
 }

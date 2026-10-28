@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import mactopPlatform
 
 public struct RAMUsageDetail: Sendable {
@@ -15,41 +16,51 @@ public struct RAMUsageDetail: Sendable {
   public var historyCapacity: Int
 }
 
-public final class RAMUsageReader: @unchecked Sendable {
+public final class RAMUsageReader: Sendable {
   private let platformReader = MachRAMPlatform()
-  private var history: ScalarHistory
+  private struct State: Sendable {
+    var history: ScalarHistory
+  }
+  private let state: Mutex<State>
+
   public init(updateInterval: Double = 1) {
-    history = ScalarHistory(capacity: metricGraphSampleCapacity(updateInterval: updateInterval))
+    state = Mutex(
+      State(history: ScalarHistory(capacity: metricGraphSampleCapacity(updateInterval: updateInterval))))
   }
 
   public func clearRAMUsageHistory() {
-    history.removeAll()
+    state.withLock { $0.history.removeAll() }
   }
 
   public func readRAMUsageDetail(includeHistory: Bool = false) -> RAMUsageDetail {
     guard let snapshot = platformReader.read() else {
-      return RAMUsageDetail(
-        total: 0, appBytes: 0, wiredBytes: 0, compressedBytes: 0,
-        freeBytes: 0, swapBytes: 0, swapFileBytes: 0, totalBytes: 0, pressureLevel: 0,
-        history: includeHistory ? history.orderedValues : [], historyCapacity: history.capacity)
+      return state.withLock { s in
+        RAMUsageDetail(
+          total: 0, appBytes: 0, wiredBytes: 0, compressedBytes: 0,
+          freeBytes: 0, swapBytes: 0, swapFileBytes: 0, totalBytes: 0, pressureLevel: 0,
+          history: includeHistory ? s.history.orderedValues : [],
+          historyCapacity: s.history.capacity)
+      }
     }
     let fraction =
       snapshot.totalBytes > 0 ? min(1, Double(snapshot.usedBytes) / Double(snapshot.totalBytes)) : 0
-    history.append(fraction)
 
-    return RAMUsageDetail(
-      total: fraction,
-      appBytes: snapshot.appBytes,
-      wiredBytes: snapshot.wiredBytes,
-      compressedBytes: snapshot.compressedBytes,
-      freeBytes: snapshot.freeBytes,
-      swapBytes: snapshot.swapBytes,
-      swapFileBytes: snapshot.swapFileBytes,
-      totalBytes: snapshot.totalBytes,
-      pressureLevel: snapshot.pressureLevel,
-      history: includeHistory ? history.orderedValues : [],
-      historyCapacity: history.capacity
-    )
+    return state.withLock { s in
+      s.history.append(fraction)
+      return RAMUsageDetail(
+        total: fraction,
+        appBytes: snapshot.appBytes,
+        wiredBytes: snapshot.wiredBytes,
+        compressedBytes: snapshot.compressedBytes,
+        freeBytes: snapshot.freeBytes,
+        swapBytes: snapshot.swapBytes,
+        swapFileBytes: snapshot.swapFileBytes,
+        totalBytes: snapshot.totalBytes,
+        pressureLevel: snapshot.pressureLevel,
+        history: includeHistory ? s.history.orderedValues : [],
+        historyCapacity: s.history.capacity
+      )
+    }
   }
 
 }

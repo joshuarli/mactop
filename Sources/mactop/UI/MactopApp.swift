@@ -17,7 +17,7 @@ struct MactopApp {
 }
 
 @MainActor
-class MactopAppDelegate: NSObject, NSApplicationDelegate {
+final class MactopAppDelegate: NSObject, NSApplicationDelegate {
   private var statusItems: [NSStatusItem] = []
   private var cpuView: PercentageStatusItemView!
   private var ramView: PercentageStatusItemView!

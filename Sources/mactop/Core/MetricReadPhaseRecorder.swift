@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 public struct CoreReadPhaseStats: Sendable {
   public let name: String
@@ -6,20 +7,24 @@ public struct CoreReadPhaseStats: Sendable {
   public let wallNanoseconds: UInt64
 }
 
-public final class CoreReadPhaseRecorder: @unchecked Sendable {
-  private var counts: [String: Int] = [:]
-  private var wallNanoseconds: [String: UInt64] = [:]
+public final class CoreReadPhaseRecorder: Sendable {
+  private struct State: Sendable {
+    var counts: [String: Int] = [:]
+    var wallNanoseconds: [String: UInt64] = [:]
+  }
+  private let state = Mutex(State())
 
   public init() {}
 
   public func reset() {
-    counts.removeAll(keepingCapacity: true)
-    wallNanoseconds.removeAll(keepingCapacity: true)
+    state.withLock { $0 = State() }
   }
 
   public func record(name: String, wallNanoseconds: UInt64) {
-    counts[name, default: 0] += 1
-    self.wallNanoseconds[name, default: 0] += wallNanoseconds
+    state.withLock {
+      $0.counts[name, default: 0] += 1
+      $0.wallNanoseconds[name, default: 0] += wallNanoseconds
+    }
   }
 
   @discardableResult
@@ -27,18 +32,19 @@ public final class CoreReadPhaseRecorder: @unchecked Sendable {
     let start = DispatchTime.now().uptimeNanoseconds
     let value = work()
     let elapsed = DispatchTime.now().uptimeNanoseconds - start
-    counts[name, default: 0] += 1
-    wallNanoseconds[name, default: 0] += elapsed
+    record(name: name, wallNanoseconds: elapsed)
     return value
   }
 
   public func snapshot() -> [CoreReadPhaseStats] {
-    counts.keys.sorted().map { name in
-      CoreReadPhaseStats(
-        name: name,
-        count: counts[name] ?? 0,
-        wallNanoseconds: wallNanoseconds[name] ?? 0
-      )
+    state.withLock { s in
+      s.counts.keys.sorted().map { name in
+        CoreReadPhaseStats(
+          name: name,
+          count: s.counts[name] ?? 0,
+          wallNanoseconds: s.wallNanoseconds[name] ?? 0
+        )
+      }
     }
   }
 }

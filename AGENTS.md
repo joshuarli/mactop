@@ -2,7 +2,7 @@
 
 mactop is a macOS menu-bar utility for recent system metrics with low runtime overhead.
 
-Build with `make build`, run with `make dev`, and test with `swift test` (Swift 6.4, macOS 27+).
+Build with `make build`, run with `make dev`, and test with `swift test` (Swift 6.4, macOS 27+). Lint with `make lint` (Bylaws architectural rules; lint only).
 
 - Keep Core AppKit-free and return typed metric data. UI owns views and presentation.
 - Keep process rankings per PID rather than combining children under a parent.

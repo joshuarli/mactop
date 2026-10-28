@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import mactopPlatform
 
 public enum CPUCoreKind: Sendable {
@@ -22,28 +23,25 @@ public struct CPUUsageDetail: Sendable {
   public var historyCapacity: Int
 }
 
-public final class CPUUsageReader: @unchecked Sendable {
-  private struct Tick { var user, sys, idle, nice: Double }
-  private var prev: [Tick] = []
-  private var ticks: [Tick] = []
-  private var perCore: [Double] = []
-  private var history: ScalarHistory
-  private let coreKinds: [CPUCoreKind]
-  private let uptimeFormatter: DateComponentsFormatter = {
-    let form = DateComponentsFormatter()
-    form.maximumUnitCount = 2
-    form.unitsStyle = .full
-    form.allowedUnits = [.day, .hour, .minute]
-    return form
-  }()
-  private var cachedUptimeMinute = -1
-  private var cachedUptime = "Unknown"
-  private var cachedLoadAvg = [Double](repeating: 0, count: 3)
-  private var loadAvgLastRead = Date.distantPast
-  private let loadAvgCacheInterval: TimeInterval = 5
+public final class CPUUsageReader: Sendable {
+  fileprivate struct Tick: Sendable { var user, sys, idle, nice: Double }
+  fileprivate struct State: Sendable {
+    var prev: [Tick] = []
+    var ticks: [Tick] = []
+    var perCore: [Double] = []
+    var history: ScalarHistory
+    var coreKinds: [CPUCoreKind]
+    var uptimeFormatter: DateComponentsFormatter
+    var cachedUptimeMinute = -1
+    var cachedUptime = "Unknown"
+    var cachedLoadAvg = [Double](repeating: 0, count: 3)
+    var loadAvgLastRead = Date.distantPast
+    var loadAvgCacheInterval: TimeInterval = 5
+  }
+  private let state: Mutex<State>
 
   public init(updateInterval: Double = 1) {
-    coreKinds =
+    let coreKinds: [CPUCoreKind] =
       MachCPUPlatform.readHardwareSnapshot()?.coreKinds.map { kind in
         switch kind {
         case .efficiency: return .efficiency
@@ -51,17 +49,33 @@ public final class CPUUsageReader: @unchecked Sendable {
         case .unknown: return .unknown
         }
       } ?? []
-    history = ScalarHistory(capacity: metricGraphSampleCapacity(updateInterval: updateInterval))
+    let form = DateComponentsFormatter()
+    form.maximumUnitCount = 2
+    form.unitsStyle = .full
+    form.allowedUnits = [.day, .hour, .minute]
+    state = Mutex(
+      State(
+        history: ScalarHistory(capacity: metricGraphSampleCapacity(updateInterval: updateInterval)),
+        coreKinds: coreKinds,
+        uptimeFormatter: form))
   }
 
   public func clearCPUUsageHistory() {
-    prev.removeAll(keepingCapacity: true)
-    ticks.removeAll(keepingCapacity: true)
-    perCore.removeAll(keepingCapacity: true)
-    history.removeAll()
+    state.withLock { s in
+      s.prev.removeAll(keepingCapacity: true)
+      s.ticks.removeAll(keepingCapacity: true)
+      s.perCore.removeAll(keepingCapacity: true)
+      s.history.removeAll()
+    }
   }
 
   public func readCPUUsageDetail(includeHistory: Bool = false) -> CPUUsageDetail {
+    state.withLock { s in s.read(includeHistory: includeHistory) }
+  }
+}
+
+fileprivate extension CPUUsageReader.State {
+  mutating func read(includeHistory: Bool) -> CPUUsageDetail {
     guard let snapshot = MachCPUPlatform.readHardwareSnapshot() else {
       return CPUUsageDetail(
         total: 0, system: 0, user: 0, idle: 1, usagePerCore: [],
@@ -72,7 +86,7 @@ public final class CPUUsageReader: @unchecked Sendable {
     ticks.removeAll(keepingCapacity: true)
     ticks.append(
       contentsOf: snapshot.ticks.map {
-        Tick(user: $0.user, sys: $0.system, idle: $0.idle, nice: $0.nice)
+        CPUUsageReader.Tick(user: $0.user, sys: $0.system, idle: $0.idle, nice: $0.nice)
       })
     guard !ticks.isEmpty else {
       return CPUUsageDetail(
@@ -139,7 +153,7 @@ public final class CPUUsageReader: @unchecked Sendable {
     )
   }
 
-  private func uptimeString() -> String {
+  mutating func uptimeString() -> String {
     let elapsed = Int(Date().timeIntervalSince(MachCPUPlatform.bootDate))
     let minute = elapsed / 60
     guard minute != cachedUptimeMinute else { return cachedUptime }
@@ -148,7 +162,7 @@ public final class CPUUsageReader: @unchecked Sendable {
     return cachedUptime
   }
 
-  private func loadAverage() -> [Double] {
+  mutating func loadAverage() -> [Double] {
     let now = Date()
     guard now.timeIntervalSince(loadAvgLastRead) >= loadAvgCacheInterval else {
       return cachedLoadAvg
@@ -157,5 +171,4 @@ public final class CPUUsageReader: @unchecked Sendable {
     cachedLoadAvg = MachCPUPlatform.loadAverage()
     return cachedLoadAvg
   }
-
 }

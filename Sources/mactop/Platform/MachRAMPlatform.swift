@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Synchronization
 
 public struct PlatformRAMSnapshot: Sendable {
   public let usedBytes: UInt64
@@ -13,12 +14,15 @@ public struct PlatformRAMSnapshot: Sendable {
   public let pressureLevel: Int
 }
 
-public final class MachRAMPlatform: @unchecked Sendable {
+public final class MachRAMPlatform: Sendable {
   private let totalBytes: UInt64
   private let pageSize: UInt64
-  private var cachedSwapBytes: UInt64 = 0
-  private var cachedPressureLevel = 0
-  private var slowStatsLastRead = Date.distantPast
+  fileprivate struct State: Sendable {
+    var cachedSwapBytes: UInt64 = 0
+    var cachedPressureLevel = 0
+    var slowStatsLastRead = Date.distantPast
+  }
+  private let state = Mutex(State())
 
   public init() {
     var memory: UInt64 = 0
@@ -30,6 +34,8 @@ public final class MachRAMPlatform: @unchecked Sendable {
   }
 
   public func read() -> PlatformRAMSnapshot? {
+    let pageSize = pageSize
+    let totalBytes = totalBytes
     var stats = vm_statistics64()
     var count = mach_msg_type_number_t(
       MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size)
@@ -54,22 +60,36 @@ public final class MachRAMPlatform: @unchecked Sendable {
       saturatingAdd(saturatingAdd(active, inactive), speculative),
       saturatingAdd(wired, compressed))
     let used = rawUsed > reclaimable ? rawUsed - reclaimable : 0
-    refreshSlowStats()
-    return PlatformRAMSnapshot(
-      usedBytes: used,
-      appBytes: used > saturatingAdd(wired, compressed)
-        ? used - saturatingAdd(wired, compressed) : 0,
-      wiredBytes: wired,
-      compressedBytes: compressed,
-      freeBytes: totalBytes > used ? totalBytes - used : 0,
-      swapBytes: cachedSwapBytes,
-      swapFileBytes: saturatingMultiply(UInt64(stats.swap_count), pageSize),
-      totalBytes: totalBytes,
-      pressureLevel: cachedPressureLevel
-    )
+    return state.withLock { s in
+      s.refreshSlowStats()
+      return PlatformRAMSnapshot(
+        usedBytes: used,
+        appBytes: used > saturatingAdd(wired, compressed)
+          ? used - saturatingAdd(wired, compressed) : 0,
+        wiredBytes: wired,
+        compressedBytes: compressed,
+        freeBytes: totalBytes > used ? totalBytes - used : 0,
+        swapBytes: s.cachedSwapBytes,
+        swapFileBytes: saturatingMultiply(UInt64(stats.swap_count), pageSize),
+        totalBytes: totalBytes,
+        pressureLevel: s.cachedPressureLevel
+      )
+    }
   }
 
-  private func refreshSlowStats() {
+  private func saturatingAdd(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
+    let (value, overflow) = lhs.addingReportingOverflow(rhs)
+    return overflow ? .max : value
+  }
+
+  private func saturatingMultiply(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
+    let (value, overflow) = lhs.multipliedReportingOverflow(by: rhs)
+    return overflow ? .max : value
+  }
+}
+
+fileprivate extension MachRAMPlatform.State {
+  mutating func refreshSlowStats() {
     let now = Date()
     guard now.timeIntervalSince(slowStatsLastRead) >= 5 else { return }
     slowStatsLastRead = now
@@ -83,15 +103,5 @@ public final class MachRAMPlatform: @unchecked Sendable {
     if sysctlbyname("kern.memorystatus_vm_pressure_level", &pressure, &pressureSize, nil, 0) == 0 {
       cachedPressureLevel = pressure == 4 ? 2 : (pressure == 2 ? 1 : 0)
     }
-  }
-
-  private func saturatingAdd(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
-    let (value, overflow) = lhs.addingReportingOverflow(rhs)
-    return overflow ? .max : value
-  }
-
-  private func saturatingMultiply(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
-    let (value, overflow) = lhs.multipliedReportingOverflow(by: rhs)
-    return overflow ? .max : value
   }
 }

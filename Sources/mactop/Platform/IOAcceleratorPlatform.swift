@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import IOKit
+import Synchronization
 
 public struct PlatformGPUHardwareSnapshot: Sendable {
   public let total: Double
@@ -10,18 +11,32 @@ public struct PlatformGPUHardwareSnapshot: Sendable {
   public let renderTilerSplit: Bool
 }
 
-public final class IOAcceleratorPlatform: @unchecked Sendable {
-  private var service: io_object_t = 0
-  private var hasSplit = false
+public final class IOAcceleratorPlatform: Sendable {
+  fileprivate struct State: Sendable {
+    var service: io_object_t = 0
+    var hasSplit = false
+  }
+  private let state = Mutex(State())
 
   public init() {}
 
   deinit {
-    if service != 0 { IOObjectRelease(service) }
+    state.withLock { s in
+      if s.service != 0 {
+        IOObjectRelease(s.service)
+        s.service = 0
+      }
+    }
   }
 
   public func read() -> PlatformGPUHardwareSnapshot? {
-    if service != 0, let values = readStatistics(service) {
+    state.withLock { s in s.read() }
+  }
+}
+
+fileprivate extension IOAcceleratorPlatform.State {
+  mutating func read() -> PlatformGPUHardwareSnapshot? {
+    if service != 0, let values = Self.readStatistics(service) {
       return snapshot(values)
     }
     if service != 0 {
@@ -34,8 +49,8 @@ public final class IOAcceleratorPlatform: @unchecked Sendable {
         kIOMainPortDefault, IOServiceMatching("IOAccelerator"), &iterator) == KERN_SUCCESS
     else { return nil }
     defer { IOObjectRelease(iterator) }
-    while let candidate = next(iterator) {
-      if let values = readStatistics(candidate) {
+    while let candidate = Self.next(iterator) {
+      if let values = Self.readStatistics(candidate) {
         service = candidate
         return snapshot(values)
       }
@@ -44,16 +59,17 @@ public final class IOAcceleratorPlatform: @unchecked Sendable {
     return nil
   }
 
-  private func snapshot(_ values: (total: Double, render: Double, tiler: Double))
+  mutating func snapshot(_ values: (total: Double, render: Double, tiler: Double))
     -> PlatformGPUHardwareSnapshot
   {
     if abs(values.render - values.tiler) > 0.005 { hasSplit = true }
     return PlatformGPUHardwareSnapshot(
-      total: values.total, render: values.render, tiler: values.tiler, model: modelName(),
+      total: values.total, render: values.render, tiler: values.tiler,
+      model: Self.modelName(),
       renderTilerSplit: hasSplit)
   }
 
-  private func readStatistics(_ service: io_object_t) -> (
+  private static func readStatistics(_ service: io_object_t) -> (
     total: Double, render: Double, tiler: Double
   )? {
     if let unmanaged = IORegistryEntryCreateCFProperty(
@@ -82,7 +98,7 @@ public final class IOAcceleratorPlatform: @unchecked Sendable {
     )
   }
 
-  private func utilizationValues(_ dictionary: CFDictionary) -> (
+  private static func utilizationValues(_ dictionary: CFDictionary) -> (
     total: Double, render: Double, tiler: Double
   )? {
     func number(_ key: String) -> Double? {
@@ -103,12 +119,12 @@ public final class IOAcceleratorPlatform: @unchecked Sendable {
     )
   }
 
-  private func normalizedUtilization(_ percent: Double?) -> Double {
+  private static func normalizedUtilization(_ percent: Double?) -> Double {
     guard let percent, percent.isFinite else { return 0 }
     return min(1, max(0, percent / 100))
   }
 
-  private func modelName() -> String {
+  private static func modelName() -> String {
     let value = withUnsafeTemporaryAllocation(of: CChar.self, capacity: 256) { buffer -> String in
       guard let base = buffer.baseAddress else { return "" }
       buffer[0] = 0
@@ -121,7 +137,7 @@ public final class IOAcceleratorPlatform: @unchecked Sendable {
     return value.isEmpty ? "GPU" : "\(value) GPU"
   }
 
-  private func next(_ iterator: io_iterator_t) -> io_object_t? {
+  private static func next(_ iterator: io_iterator_t) -> io_object_t? {
     let value = IOIteratorNext(iterator)
     return value == 0 ? nil : value
   }

@@ -1,21 +1,31 @@
 import Foundation
+import Synchronization
 import mactopPlatform
 
-public final class NetworkProcessReader: @unchecked Sendable {
-  private lazy var platformReader = PlatformNetworkProcessReader()
-  private var accounting = NetworkProcessAccounting()
-  private var previousTime = Date.distantPast
+public final class NetworkProcessReader: Sendable {
+  private struct State: Sendable {
+    var platformReader: PlatformNetworkProcessReader?
+    var accounting = NetworkProcessAccounting()
+    var previousTime = Date.distantPast
+  }
+  private let state = Mutex(State())
 
   public init() {}
 
   public func readTopNetworkProcessMetrics(count limit: Int = 8) -> [RankedProcessMetric] {
-    guard let platformReader else { return [] }
-    platformReader.refresh()
-    let counters = platformReader.counters()
-    let now = Date()
-    let elapsed = now.timeIntervalSince(previousTime)
-    defer { previousTime = now }
-    return accounting.metrics(counters: counters, elapsed: elapsed, limit: limit)
+    state.withLock { s in
+      if s.platformReader == nil {
+        s.platformReader = PlatformNetworkProcessReader()
+      }
+      guard let platformReader = s.platformReader else { return [] }
+      platformReader.refresh()
+      let counters = platformReader.counters()
+      let now = Date()
+      let elapsed = now.timeIntervalSince(s.previousTime)
+      let metrics = s.accounting.metrics(counters: counters, elapsed: elapsed, limit: limit)
+      s.previousTime = now
+      return metrics
+    }
   }
 }
 

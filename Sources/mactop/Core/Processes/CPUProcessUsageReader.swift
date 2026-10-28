@@ -1,22 +1,49 @@
 import Foundation
+import Synchronization
 import mactopPlatform
 
 
-public final class CPUProcessUsageReader: @unchecked Sendable {
+public final class CPUProcessUsageReader: Sendable {
   private let nativeCrossUser = ProcessPlatform.canReadRootProcess()
-
-  private var previous: [Int32: (time: UInt64, start: UInt64)] = [:]
-  private var previousTime: TimeInterval?
-  private var nameCache: [Int32: String] = [:]
+  fileprivate struct State: Sendable {
+    var previous: [Int32: (time: UInt64, start: UInt64)] = [:]
+    var previousTime: TimeInterval?
+    var nameCache: [Int32: String] = [:]
+  }
+  private let state = Mutex(State())
 
   public init() {}
 
   public func readTopCPUProcessMetrics(count limit: Int = 8) -> [RankedProcessMetric] {
-    nativeCrossUser
-      ? readNativeCPUProcessMetrics(count: limit) : readPSCPUProcessMetrics(count: limit)
+    guard nativeCrossUser else { return readPSCPUProcessMetrics(count: limit) }
+    return state.withLock { s in s.readNative(count: limit) }
+  }
+  private func readPSCPUProcessMetrics(count limit: Int) -> [RankedProcessMetric] {
+    let task = Process()
+    task.launchPath = "/bin/ps"
+    task.arguments = ["-Aceo", "pid,pcpu,comm", "-r"]
+    let outPipe = Pipe()
+    task.standardOutput = outPipe
+    task.standardError = Pipe()
+    defer {
+      outPipe.fileHandleForReading.closeFile()
+      (task.standardError as? Pipe)?.fileHandleForReading.closeFile()
+    }
+    do { try task.run() } catch { return [] }
+    let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+    task.waitUntilExit()
+    guard let output = String(data: data, encoding: .utf8) else { return [] }
+    return parsePSProcessOutput(output, count: limit).map { entry in
+      let name = processDisplayName(pid: entry.pid)
+      let resolved = name == "pid \(entry.pid)" && !entry.comm.isEmpty ? entry.comm : name
+      return RankedProcessMetric(pid: entry.pid, name: resolved, value: entry.pct)
+    }
   }
 
-  private func readNativeCPUProcessMetrics(count limit: Int) -> [RankedProcessMetric] {
+}
+
+fileprivate extension CPUProcessUsageReader.State {
+  mutating func readNative(count limit: Int) -> [RankedProcessMetric] {
     let now = ProcessInfo.processInfo.systemUptime
     let kinfo = allKinfoPctcpu()
     guard !kinfo.isEmpty else { return [] }
@@ -61,29 +88,7 @@ public final class CPUProcessUsageReader: @unchecked Sendable {
     return top
   }
 
-  private func readPSCPUProcessMetrics(count limit: Int) -> [RankedProcessMetric] {
-    let task = Process()
-    task.launchPath = "/bin/ps"
-    task.arguments = ["-Aceo", "pid,pcpu,comm", "-r"]
-    let outPipe = Pipe()
-    task.standardOutput = outPipe
-    task.standardError = Pipe()
-    defer {
-      outPipe.fileHandleForReading.closeFile()
-      (task.standardError as? Pipe)?.fileHandleForReading.closeFile()
-    }
-    do { try task.run() } catch { return [] }
-    let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-    task.waitUntilExit()
-    guard let output = String(data: data, encoding: .utf8) else { return [] }
-    return parsePSProcessOutput(output, count: limit).map { entry in
-      let name = processDisplayName(pid: entry.pid)
-      let resolved = name == "pid \(entry.pid)" && !entry.comm.isEmpty ? entry.comm : name
-      return RankedProcessMetric(pid: entry.pid, name: resolved, value: entry.pct)
-    }
-  }
-
-  private func processName(pid: Int32, fallback: String = "") -> String {
+  mutating func processName(pid: Int32, fallback: String = "") -> String {
     if let cached = nameCache[pid] { return cached }
     let name = processDisplayName(pid: pid)
     let resolved = name == "pid \(pid)" && !fallback.isEmpty ? fallback : name

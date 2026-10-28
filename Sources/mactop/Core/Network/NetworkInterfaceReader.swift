@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import mactopPlatform
 
 public struct NetworkUsageDetail: Sendable {
@@ -17,14 +18,17 @@ public struct NetworkUsageDetail: Sendable {
   public var historyCapacity: Int
 }
 
-public final class NetworkInterfaceReader: @unchecked Sendable {
+public final class NetworkInterfaceReader: Sendable {
   private let readSnapshot: @Sendable () -> PlatformNetworkInterfaceSnapshot?
-  private var previousUp: UInt64 = 0
-  private var previousDown: UInt64 = 0
-  private var cumulativeUp: UInt64 = 0
-  private var cumulativeDown: UInt64 = 0
-  private var lastTime = Date()
-  private var history: PairHistory
+  fileprivate struct State: Sendable {
+    var previousUp: UInt64 = 0
+    var previousDown: UInt64 = 0
+    var cumulativeUp: UInt64 = 0
+    var cumulativeDown: UInt64 = 0
+    var lastTime = Date()
+    var history: PairHistory
+  }
+  private let state: Mutex<State>
 
   public convenience init(updateInterval: Double = 1) {
     let platform = NetworkInterfacePlatform()
@@ -36,23 +40,35 @@ public final class NetworkInterfaceReader: @unchecked Sendable {
     readSnapshot: @escaping @Sendable () -> PlatformNetworkInterfaceSnapshot?
   ) {
     self.readSnapshot = readSnapshot
-    history = PairHistory(capacity: metricGraphSampleCapacity(updateInterval: updateInterval))
+    state = Mutex(
+      State(history: PairHistory(capacity: metricGraphSampleCapacity(updateInterval: updateInterval))))
   }
 
   public func clearNetworkUsageHistory() {
-    previousUp = 0
-    previousDown = 0
-    cumulativeUp = 0
-    cumulativeDown = 0
-    lastTime = Date()
-    history.removeAll()
+    state.withLock { s in
+      s.previousUp = 0
+      s.previousDown = 0
+      s.cumulativeUp = 0
+      s.cumulativeDown = 0
+      s.lastTime = Date()
+      s.history.removeAll()
+    }
   }
 
   public func readNetworkUsageDetail(includeHistory: Bool = false) -> NetworkUsageDetail {
     let now = Date()
     guard let snapshot = readSnapshot() else {
-      return detail(includeHistory: includeHistory)
+      return state.withLock { s in s.detail(includeHistory: includeHistory) }
     }
+    return state.withLock { s in s.read(snapshot: snapshot, now: now, includeHistory: includeHistory)
+    }
+  }
+}
+
+fileprivate extension NetworkInterfaceReader.State {
+  mutating func read(snapshot: PlatformNetworkInterfaceSnapshot, now: Date, includeHistory: Bool)
+    -> NetworkUsageDetail
+  {
     let elapsed = now.timeIntervalSince(lastTime)
     let upload = networkCounterRate(
       current: snapshot.uploadBytes, previous: previousUp, elapsed: elapsed)
@@ -74,7 +90,7 @@ public final class NetworkInterfaceReader: @unchecked Sendable {
       history: includeHistory ? history.orderedValues : [], historyCapacity: history.capacity)
   }
 
-  private func detail(includeHistory: Bool) -> NetworkUsageDetail {
+  func detail(includeHistory: Bool) -> NetworkUsageDetail {
     NetworkUsageDetail(
       upload: 0, download: 0, totalUp: cumulativeUp, totalDown: cumulativeDown, interfaceName: "",
       displayName: "", macAddress: "", ssid: nil, localIP: "", transmitRate: 0, isUp: false,

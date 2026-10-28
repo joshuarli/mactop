@@ -28,6 +28,8 @@ Network is registered first to reduce the chance macOS hides it when menu-bar sp
 [SystemMetricsCoordinator.swift](../Sources/mactop/Core/SystemMetricsCoordinator.swift) uses one interval timer on a serial coordinator queue.
 Each reader runs on its own utility queue, with an in-flight flag preventing overlapping reads.
 Results return through the coordinator queue and then the main queue.
+Readers and the coordinator guard mutable state with a `Synchronization.Mutex` on top of queue confinement, so the types are strictly `Sendable`.
+The private-framework bindings stay outside that rule: [NetworkStatisticsPlatform.swift](../Sources/mactop/Platform/NetworkStatisticsPlatform.swift) and [PowerTelemetryPlatform.swift](../Sources/mactop/Platform/PowerTelemetryPlatform.swift) hold `dlopen` handles, retained C blocks, and CF containers that Swift 6 cannot prove safe, and [PowerTelemetryReader.swift](../Sources/mactop/Core/Power/PowerTelemetryReader.swift) owns the modeled-power reader. Those three files are exempt from the unchecked-concurrency rule; everything else must stay strictly `Sendable`.
 History snapshots are delivered for visible popups. Readers continue collecting history while popups are hidden.
 
 Process lists refresh on opening a matching popup and every three seconds while visible.

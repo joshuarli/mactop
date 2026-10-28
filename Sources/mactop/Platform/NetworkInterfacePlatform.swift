@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Synchronization
 import SystemConfiguration
 
 public struct PlatformNetworkInterfaceSnapshot: Sendable {
@@ -14,22 +15,30 @@ public struct PlatformNetworkInterfaceSnapshot: Sendable {
   public let isUp: Bool
 }
 
-public final class NetworkInterfacePlatform: @unchecked Sendable {
-  private let dynamicStore = SCDynamicStoreCreate(nil, "mactop" as CFString, nil, nil)
-  private var primaryInterfaceLastRead = Date.distantPast
-  private var cachedPrimaryInterface: String?
-  private var detailsLastRead = Date.distantPast
-  private var cachedInterfaceName = ""
-  private var cachedLocalIP = ""
-  private var cachedIsUp = false
-  private var cachedDisplayName = ""
-  private var cachedMAC = ""
-  private var cachedSSID: String?
-  private var cachedTransmitRate = 0.0
+public final class NetworkInterfacePlatform: Sendable {
+  fileprivate struct State: Sendable {
+    var primaryInterfaceLastRead = Date.distantPast
+    var cachedPrimaryInterface: String?
+    var detailsLastRead = Date.distantPast
+    var cachedInterfaceName = ""
+    var cachedLocalIP = ""
+    var cachedIsUp = false
+    var cachedDisplayName = ""
+    var cachedMAC = ""
+    var cachedSSID: String?
+    var cachedTransmitRate = 0.0
+  }
+  private let state = Mutex(State())
 
   public init() {}
 
   public func read() -> PlatformNetworkInterfaceSnapshot? {
+    state.withLock { s in s.read() }
+  }
+}
+
+fileprivate extension NetworkInterfacePlatform.State {
+  mutating func read() -> PlatformNetworkInterfaceSnapshot? {
     let now = Date()
     let preferred = activePrimaryInterfaceName()
     let refresh = now.timeIntervalSince(detailsLastRead) >= 15
@@ -99,13 +108,14 @@ public final class NetworkInterfacePlatform: @unchecked Sendable {
       localIP: cachedLocalIP, transmitRate: cachedTransmitRate, isUp: cachedIsUp)
   }
 
-  private func activePrimaryInterfaceName() -> String? {
+  mutating func activePrimaryInterfaceName() -> String? {
     let now = Date()
     guard now.timeIntervalSince(primaryInterfaceLastRead) >= 15 else {
       return cachedPrimaryInterface
     }
     primaryInterfaceLastRead = now
-    guard let dynamicStore,
+    guard
+      let dynamicStore = SCDynamicStoreCreate(nil, "mactop" as CFString, nil, nil),
       let global = SCDynamicStoreCopyValue(dynamicStore, "State:/Network/Global/IPv4" as CFString)
         as? [String: Any],
       let interface = global["PrimaryInterface"] as? String, !interface.isEmpty
@@ -114,7 +124,7 @@ public final class NetworkInterfacePlatform: @unchecked Sendable {
     return interface
   }
 
-  private func refreshInterfaceDetails(
+  mutating func refreshInterfaceDetails(
     preferred: String?, links: [String: (Bool, String, Double)], ips: [String: String],
     firstLink: String, firstIP: String
   ) {
@@ -133,7 +143,8 @@ public final class NetworkInterfacePlatform: @unchecked Sendable {
       guard SCNetworkInterfaceGetBSDName(interface) as String? == name else { continue }
       cachedDisplayName = SCNetworkInterfaceGetLocalizedDisplayName(interface) as String? ?? name
       if SCNetworkInterfaceGetInterfaceType(interface) as String?
-        == (kSCNetworkInterfaceTypeIEEE80211 as String), let dynamicStore,
+        == (kSCNetworkInterfaceTypeIEEE80211 as String),
+        let dynamicStore = SCDynamicStoreCreate(nil, "mactop" as CFString, nil, nil),
         let info = SCDynamicStoreCopyValue(
           dynamicStore, "State:/Network/Interface/\(name)/AirPort" as CFString) as? [String: Any]
       {
