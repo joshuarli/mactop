@@ -178,35 +178,21 @@ fileprivate extension NetworkInterfacePlatform.State {
   }
 
   private func loadInterfaceCounters() -> [String: InterfaceData64Counters]? {
-    var mib: [Int32] = [CTL_NET, PF_ROUTE, 0, 0, NET_RT_IFLIST2, 0]
-    var size = 0
-    guard sysctl(&mib, 6, nil, &size, nil, 0) == 0, size > 0 else { return nil }
-    for _ in 0..<3 {
-      let loaded = withUnsafeTemporaryAllocation(of: UInt8.self, capacity: size) { buffer in
-        var actual = buffer.count
-        guard let base = buffer.baseAddress else { return InterfaceCounterLoad.failed }
-        guard sysctl(&mib, 6, base, &actual, nil, 0) == 0 else {
-          return errno == ENOMEM ? InterfaceCounterLoad.retry : InterfaceCounterLoad.failed
-        }
-        guard actual >= 0, actual <= buffer.count else { return InterfaceCounterLoad.failed }
-        return InterfaceCounterLoad.ready(
-          interfaceData64Counters(in: UnsafeRawBufferPointer(start: base, count: actual)))
-      }
-      switch loaded {
-      case .ready(let counters): return counters
-      case .failed: return nil
-      case .retry:
-        guard sysctl(&mib, 6, nil, &size, nil, 0) == 0, size > 0 else { return nil }
-      }
+    var countMIB: [Int32] = [CTL_NET, PF_LINK, NETLINK_GENERIC, IFMIB_SYSTEM, IFMIB_IFCOUNT]
+    var count: CUnsignedInt = 0
+    var countSize = MemoryLayout<CUnsignedInt>.size
+    guard sysctl(&countMIB, 5, &count, &countSize, nil, 0) == 0, count > 0 else { return nil }
+    var counters: [String: InterfaceData64Counters] = [:]
+    for index in 1...Int32(clamping: count) {
+      var mib: [Int32] = [CTL_NET, PF_LINK, NETLINK_GENERIC, IFMIB_IFDATA, index, IFDATA_GENERAL]
+      var data = ifmibdata()
+      var size = MemoryLayout<ifmibdata>.size
+      guard sysctl(&mib, 6, &data, &size, nil, 0) == 0 else { continue }
+      let (name, interfaceCounters) = interfaceData64Counters(from: data)
+      counters[name] = interfaceCounters
     }
-    return nil
+    return counters
   }
-}
-
-private enum InterfaceCounterLoad {
-  case ready([String: InterfaceData64Counters])
-  case retry
-  case failed
 }
 
 struct InterfaceData64Counters {
@@ -215,33 +201,14 @@ struct InterfaceData64Counters {
   var baudrate: UInt64
 }
 
-func interfaceData64Counters(in buffer: UnsafeRawBufferPointer) -> [String: InterfaceData64Counters] {
-  var counters: [String: InterfaceData64Counters] = [:]
-  let headerSize = MemoryLayout<if_msghdr2>.size
-  var offset = 0
-  while offset + 4 <= buffer.count {
-    let length = Int(buffer.loadUnaligned(fromByteOffset: offset, as: UInt16.self))
-    let type = buffer.loadUnaligned(fromByteOffset: offset + 3, as: UInt8.self)
-    guard length >= 4, offset + length <= buffer.count else { break }
-    if type == UInt8(RTM_IFINFO2), length >= headerSize,
-      let name = interfaceName(in: buffer, range: (offset + headerSize)..<(offset + length))
-    {
-      let header = buffer.loadUnaligned(fromByteOffset: offset, as: if_msghdr2.self)
-      counters[name] = InterfaceData64Counters(
-        inputBytes: header.ifm_data.ifi_ibytes, outputBytes: header.ifm_data.ifi_obytes,
-        baudrate: header.ifm_data.ifi_baudrate)
-    }
-    offset += length
+func interfaceData64Counters(from data: ifmibdata) -> (name: String, counters: InterfaceData64Counters) {
+  let name = withUnsafeBytes(of: data.ifmd_name) { bytes in
+    String(decoding: bytes.prefix(while: { $0 != 0 }), as: UTF8.self)
   }
-  return counters
-}
-
-private func interfaceName(in buffer: UnsafeRawBufferPointer, range: Range<Int>) -> String? {
-  guard range.count >= 8 else { return nil }
-  let family = buffer.loadUnaligned(fromByteOffset: range.lowerBound + 1, as: UInt8.self)
-  let length = Int(buffer.loadUnaligned(fromByteOffset: range.lowerBound + 5, as: UInt8.self))
-  let data = range.lowerBound + 8
-  guard family == UInt8(AF_LINK), length > 0, data + length <= range.upperBound else { return nil }
-  let bytes = UnsafeRawBufferPointer(rebasing: buffer[data..<(data + length)])
-  return String(decoding: bytes, as: UTF8.self)
+  return (
+    name,
+    InterfaceData64Counters(
+      inputBytes: data.ifmd_data.ifi_ibytes, outputBytes: data.ifmd_data.ifi_obytes,
+      baudrate: data.ifmd_data.ifi_baudrate)
+  )
 }

@@ -278,53 +278,34 @@ final class NetworkSessionTotalTests: XCTestCase {
   }
 }
 
-private func interfaceListMessage(
+private func interfaceMIBData(
   name: String, input: UInt64, output: UInt64, baudrate: UInt64
-) -> [UInt8] {
-  var header = if_msghdr2()
-  let nameBytes = Array(name.utf8)
-  let addressLength = (8 + nameBytes.count + 3) & ~3
-  header.ifm_msglen = UInt16(MemoryLayout<if_msghdr2>.size + addressLength)
-  header.ifm_type = UInt8(RTM_IFINFO2)
-  header.ifm_addrs = RTA_IFP
-  header.ifm_data.ifi_ibytes = input
-  header.ifm_data.ifi_obytes = output
-  header.ifm_data.ifi_baudrate = baudrate
-  var bytes = [UInt8](repeating: 0, count: Int(header.ifm_msglen))
-  withUnsafeBytes(of: header) { raw in
-    for (offset, byte) in raw.enumerated() {
-      bytes[offset] = byte
-    }
+) -> ifmibdata {
+  var data = ifmibdata()
+  withUnsafeMutableBytes(of: &data.ifmd_name) { bytes in
+    for (offset, byte) in name.utf8.enumerated() { bytes[offset] = byte }
   }
-  let start = MemoryLayout<if_msghdr2>.size
-  bytes[start] = UInt8(addressLength)
-  bytes[start + 1] = UInt8(AF_LINK)
-  bytes[start + 5] = UInt8(nameBytes.count)
-  for (offset, byte) in nameBytes.enumerated() {
-    bytes[start + 8 + offset] = byte
-  }
-  return bytes
-}
-
-private func counterFixture(input: UInt64, output: UInt64, baudrate: UInt64) -> [UInt8] {
-  [8, 0, 0, UInt8(RTM_NEWADDR), 0, 0, 0, 0]
-    + interfaceListMessage(name: "gif0", input: 7, output: 8, baudrate: 0)
-    + interfaceListMessage(name: "en0", input: input, output: output, baudrate: baudrate)
+  data.ifmd_data.ifi_ibytes = input
+  data.ifmd_data.ifi_obytes = output
+  data.ifmd_data.ifi_baudrate = baudrate
+  return data
 }
 
 final class InterfaceData64CounterTests: XCTestCase {
   func testCounterCrosses32BitsAndBaudrateStaysWide() throws {
     let baudrate = UInt64(UInt32.max) + 1_000_000
-    let below = counterFixture(
-      input: UInt64(UInt32.max) - 3, output: UInt64(UInt32.max) - 9, baudrate: baudrate
-    ).withUnsafeBytes { interfaceData64Counters(in: $0) }
-    let above = counterFixture(
-      input: UInt64(UInt32.max) + 7, output: UInt64(UInt32.max) + 16, baudrate: baudrate
-    ).withUnsafeBytes { interfaceData64Counters(in: $0) }
-    let low = try XCTUnwrap(below["en0"])
-    let high = try XCTUnwrap(above["en0"])
-    XCTAssertEqual(below["gif0"]?.inputBytes, 7)
-    XCTAssertEqual(below["gif0"]?.outputBytes, 8)
+    let lowRead = interfaceData64Counters(
+      from: interfaceMIBData(
+        name: "en0", input: UInt64(UInt32.max) - 3, output: UInt64(UInt32.max) - 9,
+        baudrate: baudrate))
+    let highRead = interfaceData64Counters(
+      from: interfaceMIBData(
+        name: "en0", input: UInt64(UInt32.max) + 7, output: UInt64(UInt32.max) + 16,
+        baudrate: baudrate))
+    XCTAssertEqual(lowRead.name, "en0")
+    XCTAssertEqual(highRead.name, "en0")
+    let low = lowRead.counters
+    let high = highRead.counters
     XCTAssertEqual(low.inputBytes, UInt64(UInt32.max) - 3)
     XCTAssertEqual(low.outputBytes, UInt64(UInt32.max) - 9)
     XCTAssertEqual(low.baudrate, baudrate)
