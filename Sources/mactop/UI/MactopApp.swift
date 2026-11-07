@@ -54,6 +54,7 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
   private var ramProcessReadInFlight = false
   private var networkProcessReadInFlight = false
   private var isPaused = false
+  private var isSleeping = false
   private var dataEpoch = 0
 
   func applicationDidFinishLaunching(_ notification: Notification) {
@@ -169,7 +170,7 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
       deadline: .now() + .seconds(3), repeating: .seconds(3), leeway: .milliseconds(250))
     detailTimer.setEventHandler { [weak self] in
       guard let self else { return }
-      guard !self.isPaused else { return }
+      guard !self.isPaused, !self.isSleeping else { return }
       if self.cpuPanel.isVisible {
         self.refreshProcesses(for: 1)
       }
@@ -192,10 +193,12 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
   }
 
   @objc private func systemDidWake(_ notification: Notification) {
+    isSleeping = false
     systemMetricsCoordinator.systemDidWake()
   }
 
   @objc private func systemWillSleep(_ notification: Notification) {
+    isSleeping = true
     systemMetricsCoordinator.systemWillSleep()
   }
 
@@ -240,7 +243,7 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
   }
 
   private func refreshProcesses(for index: Int) {
-    guard !isPaused else { return }
+    guard !isPaused, !isSleeping else { return }
     let epoch = dataEpoch
     switch index {
     case 0:

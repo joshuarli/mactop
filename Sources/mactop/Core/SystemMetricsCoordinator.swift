@@ -190,7 +190,7 @@ public final class SystemMetricsCoordinator: Sendable {
 
   public func systemWillSleep() {
     coordinatorQueue.async { [weak self] in
-      self?.state.withLock { $0.isSleeping = true }
+      self?.state.withLock { $0.isSleeping = true; $0.dataEpoch += 1 }
     }
   }
 
