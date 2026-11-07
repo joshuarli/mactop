@@ -131,40 +131,41 @@ private func addPopupColorValueRow(_ view: NSView, color: NSColor, title: String
 
 private final class RankedProcessListView: NSView {
   private let processCount: Int
-  private var iconViews: [NSImageView] = []
+  private var pidLabels: [LabelField] = []
   private var nameLabels: [LabelField] = []
   private var valueLabels: [ValueField] = []
-  private var iconCacheByPID: [Int32: NSImage] = [:]
-  private var iconCacheByName: [String: NSImage] = [:]
 
   init(frame: NSRect, count: Int, valueHeader _: String) {
     self.processCount = count
     super.init(frame: frame)
     let w = frame.width
+    let pidW: CGFloat = 48
     let valueW: CGFloat = 72
     let nameW = w - valueW - margins
+    let nameX = pidW + 6
 
     for i in 0..<count {
       let y = CGFloat(count - 1 - i) * rowHeight
       let row = NSView(frame: NSRect(x: 0, y: y, width: w, height: rowHeight))
 
-      let iconView = NSImageView(
-        frame: NSRect(x: 2, y: (rowHeight - 16) / 2, width: 16, height: 16))
-      iconView.imageScaling = .scaleProportionallyDown
+      let pidLabel = LabelField(
+        "", frame: NSRect(x: 2, y: (rowHeight - 16) / 2, width: pidW, height: 16))
+      pidLabel.alignment = .right
+      pidLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
 
       let nameLabel = LabelField(
-        "", frame: NSRect(x: 20, y: (rowHeight - 16) / 2, width: nameW - 20, height: 16))
+        "", frame: NSRect(x: nameX, y: (rowHeight - 16) / 2, width: nameW - nameX, height: 16))
       nameLabel.cell?.lineBreakMode = .byTruncatingTail
 
       let valueLabel = ValueField(
         "", frame: NSRect(x: nameW, y: (rowHeight - 16) / 2, width: valueW, height: 16))
 
-      row.addSubview(iconView)
+      row.addSubview(pidLabel)
       row.addSubview(nameLabel)
       row.addSubview(valueLabel)
       addSubview(row)
 
-      iconViews.append(iconView)
+      pidLabels.append(pidLabel)
       nameLabels.append(nameLabel)
       valueLabels.append(valueLabel)
     }
@@ -175,27 +176,27 @@ private final class RankedProcessListView: NSView {
   func setRankedProcesses(_ procs: [RankedProcessMetric], format: (Double) -> String) {
     for i in 0..<processCount {
       if i < procs.count {
+        let pid = procs[i].pid > 0 ? "\(procs[i].pid)" : ""
         let name = procs[i].name
         let value = format(procs[i].value)
-        let icon = iconForProcess(procs[i])
+        if pidLabels[i].stringValue != pid {
+          pidLabels[i].stringValue = pid
+        }
         if nameLabels[i].stringValue != name {
           nameLabels[i].stringValue = name
         }
         if valueLabels[i].stringValue != value {
           valueLabels[i].stringValue = value
         }
-        if iconViews[i].image !== icon {
-          iconViews[i].image = icon
-        }
       } else {
+        if !pidLabels[i].stringValue.isEmpty {
+          pidLabels[i].stringValue = ""
+        }
         if !nameLabels[i].stringValue.isEmpty {
           nameLabels[i].stringValue = ""
         }
         if !valueLabels[i].stringValue.isEmpty {
           valueLabels[i].stringValue = ""
-        }
-        if iconViews[i].image != nil {
-          iconViews[i].image = nil
         }
       }
     }
@@ -203,25 +204,6 @@ private final class RankedProcessListView: NSView {
 
   func clearRankedProcesses() {
     setRankedProcesses([]) { _ in "" }
-  }
-
-  private func iconForProcess(_ process: RankedProcessMetric) -> NSImage? {
-    if process.pid > 0 {
-      if let cached = iconCacheByPID[process.pid] { return cached }
-      if let icon = NSRunningApplication(processIdentifier: pid_t(process.pid))?.icon {
-        iconCacheByPID[process.pid] = icon
-        return icon
-      }
-    }
-
-    if let cached = iconCacheByName[process.name] { return cached }
-    let icon = NSWorkspace.shared.runningApplications
-      .first {
-        $0.localizedName == process.name || $0.executableURL?.lastPathComponent == process.name
-      }
-      .flatMap { $0.icon }
-    if let icon { iconCacheByName[process.name] = icon }
-    return icon
   }
 }
 
