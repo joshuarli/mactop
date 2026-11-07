@@ -12,6 +12,10 @@ public final class SystemMetricsCoordinator: Sendable {
   private let ramQueue = DispatchQueue(label: "mactop.ram-metrics-reader", qos: .utility)
   private let gpuQueue = DispatchQueue(label: "mactop.gpu-metrics-reader", qos: .utility)
   private let networkQueue = DispatchQueue(label: "mactop.network-metrics-reader", qos: .utility)
+  private let onCPU: @MainActor @Sendable (CPUUsageDetail) -> Void
+  private let onRAM: @MainActor @Sendable (RAMUsageDetail) -> Void
+  private let onGPU: @MainActor @Sendable (GPUUsageDetail) -> Void
+  private let onNetwork: @MainActor @Sendable (NetworkUsageDetail) -> Void
   private let timers: [DispatchSourceTimer]
   private struct State: Sendable {
     var cpuReadInFlight = false
@@ -33,6 +37,10 @@ public final class SystemMetricsCoordinator: Sendable {
     onNetwork: @escaping @MainActor @Sendable (NetworkUsageDetail) -> Void
   ) {
 
+    self.onCPU = onCPU
+    self.onRAM = onRAM
+    self.onGPU = onGPU
+    self.onNetwork = onNetwork
     let interval = normalizedMetricUpdateInterval(config.updateInterval)
     cpuReader = CPUUsageReader(updateInterval: interval)
     ramReader = RAMUsageReader(updateInterval: interval)
@@ -45,17 +53,12 @@ public final class SystemMetricsCoordinator: Sendable {
     let repeating = DispatchTimeInterval.milliseconds(ms)
     timer.schedule(deadline: .now() + repeating, repeating: repeating, leeway: .milliseconds(100))
     timer.setEventHandler { [weak self] in
-      self?.refreshAll(onCPU: onCPU, onRAM: onRAM, onGPU: onGPU, onNetwork: onNetwork)
+      self?.refreshAll()
     }
     timer.resume()
   }
 
-  private func refreshAll(
-    onCPU: @escaping @MainActor @Sendable (CPUUsageDetail) -> Void,
-    onRAM: @escaping @MainActor @Sendable (RAMUsageDetail) -> Void,
-    onGPU: @escaping @MainActor @Sendable (GPUUsageDetail) -> Void,
-    onNetwork: @escaping @MainActor @Sendable (NetworkUsageDetail) -> Void
-  ) {
+  private func refreshAll() {
     struct Kick {
       var cpu = false
       var ram = false
@@ -91,7 +94,7 @@ public final class SystemMetricsCoordinator: Sendable {
             return !s.isPaused && s.dataEpoch == epoch
           }
           guard proceed else { return }
-          DispatchQueue.main.async { onCPU(cpu) }
+          DispatchQueue.main.async { self.onCPU(cpu) }
         }
       }
     }
@@ -106,7 +109,7 @@ public final class SystemMetricsCoordinator: Sendable {
             return !s.isPaused && s.dataEpoch == epoch
           }
           guard proceed else { return }
-          DispatchQueue.main.async { onRAM(ram) }
+          DispatchQueue.main.async { self.onRAM(ram) }
         }
       }
     }
@@ -121,7 +124,7 @@ public final class SystemMetricsCoordinator: Sendable {
             return !s.isPaused && s.dataEpoch == epoch
           }
           guard proceed else { return }
-          DispatchQueue.main.async { onGPU(gpu) }
+          DispatchQueue.main.async { self.onGPU(gpu) }
         }
       }
     }
@@ -137,7 +140,7 @@ public final class SystemMetricsCoordinator: Sendable {
             return !s.isPaused && s.dataEpoch == epoch
           }
           guard proceed else { return }
-          DispatchQueue.main.async { onNetwork(network) }
+          DispatchQueue.main.async { self.onNetwork(network) }
         }
       }
     }
@@ -145,9 +148,14 @@ public final class SystemMetricsCoordinator: Sendable {
 
   public func setHistoryEnabled(_ enabled: Bool, for index: Int) {
     coordinatorQueue.async { [weak self] in
-      self?.state.withLock { s in
-        guard s.historyEnabled.indices.contains(index) else { return }
+      guard let self else { return }
+      let applied = self.state.withLock { s -> Bool in
+        guard s.historyEnabled.indices.contains(index) else { return false }
         s.historyEnabled[index] = enabled
+        return true
+      }
+      if applied, enabled {
+        self.refreshAll()
       }
     }
   }
@@ -166,9 +174,6 @@ public final class SystemMetricsCoordinator: Sendable {
       self.state.withLock { s in
         s.isPaused = paused
         s.dataEpoch += 1
-        if paused {
-          s.historyEnabled = Array(repeating: false, count: 4)
-        }
       }
       if paused {
         self.clearReaderData()

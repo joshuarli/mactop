@@ -1,15 +1,6 @@
 Prefix: MAC
 Next: 16
 
-### MAC-13 · P2 · Resuming from pause leaves an open panel's charts without history
-
-- **Area:** Architecture
-- **Where:** `Sources/mactop/Core/SystemMetricsCoordinator.swift:21`, `Sources/mactop/Core/SystemMetricsCoordinator.swift:69`, `Sources/mactop/Core/SystemMetricsCoordinator.swift:78`, `Sources/mactop/Core/SystemMetricsCoordinator.swift:163`, `Sources/mactop/UI/MactopApp.swift:206`, `Sources/mactop/UI/MactopApp.swift:341`, `Sources/mactop/UI/MetricPopups.swift:666`
-- **Problem:** Panel-history delivery is split between panel visibility in the app delegate and `historyEnabled` in the coordinator, and pause resets only the coordinator copy. Open a panel (`setHistoryEnabled(true)`, `MactopApp.swift:341`), then pause and resume from the panel's own button: `SystemMetricsCoordinator.setPaused` clears `historyEnabled` when pausing (`SystemMetricsCoordinator.swift:170`) and on resume only clears `isPaused` (`SystemMetricsCoordinator.swift:167`), and `MactopAppDelegate.setPaused` never re-enables history for the still-visible panel (`MactopApp.swift:206`). Every later tick therefore delivers `history: []` (`SystemMetricsCoordinator.swift:69`, `78`) while the readers keep appending internally, so the open panel's charts stay empty for the rest of that panel session; closing and reopening the panel is the only recovery. No test covers pause/resume. The same delivery gap shows on open: `refreshPopup(syncHistory: true)` passes a flag every popup update discards (`MetricPopups.swift:666` `syncHistory _:`), so the chart is blank until the next coordinator tick.
-- **Recommendation:** On resume, re-enable history for the panels that are still visible (the app delegate owns `isVisible`), and make opening a panel deliver the existing history immediately instead of waiting for a tick.
-- **Fix with:** lifecycle-concurrency
-- **Effort:** S
-
 ### MAC-14 · P3 · Sleeping is checked only when kicking reads, not when deliveries land
 
 - **Area:** Concurrency
