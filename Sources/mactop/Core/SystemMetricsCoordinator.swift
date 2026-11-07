@@ -1,6 +1,13 @@
 import Foundation
 import Synchronization
 
+public enum MetricKind: Sendable, CaseIterable {
+  case network
+  case cpu
+  case ram
+  case gpu
+}
+
 public final class SystemMetricsCoordinator: Sendable {
   private let cpuReader: CPUUsageReader
   private let ramReader: RAMUsageReader
@@ -22,7 +29,7 @@ public final class SystemMetricsCoordinator: Sendable {
     var ramReadInFlight = false
     var gpuReadInFlight = false
     var networkReadInFlight = false
-    var historyEnabled = Array(repeating: false, count: 4)
+    var historyEnabled = Set<MetricKind>()
     var isPaused = false
     var isSleeping = false
     var dataEpoch = 0
@@ -64,7 +71,7 @@ public final class SystemMetricsCoordinator: Sendable {
       var ram = false
       var gpu = false
       var network = false
-      var includeHistory: [Bool] = []
+      var includeHistory = Set<MetricKind>()
       var epoch = 0
     }
     let kick = state.withLock { s -> Kick? in
@@ -78,10 +85,10 @@ public final class SystemMetricsCoordinator: Sendable {
     }
     guard let kick else { return }
 
-    let includeNetworkHistory = kick.includeHistory[0]
-    let includeCPUHistory = kick.includeHistory[1]
-    let includeRAMHistory = kick.includeHistory[2]
-    let includeGPUHistory = kick.includeHistory[3]
+    let includeNetworkHistory = kick.includeHistory.contains(.network)
+    let includeCPUHistory = kick.includeHistory.contains(.cpu)
+    let includeRAMHistory = kick.includeHistory.contains(.ram)
+    let includeGPUHistory = kick.includeHistory.contains(.gpu)
     let epoch = kick.epoch
 
     if kick.cpu {
@@ -146,15 +153,17 @@ public final class SystemMetricsCoordinator: Sendable {
     }
   }
 
-  public func setHistoryEnabled(_ enabled: Bool, for index: Int) {
+  public func setHistoryEnabled(_ enabled: Bool, for kind: MetricKind) {
     coordinatorQueue.async { [weak self] in
       guard let self else { return }
-      let applied = self.state.withLock { s -> Bool in
-        guard s.historyEnabled.indices.contains(index) else { return false }
-        s.historyEnabled[index] = enabled
-        return true
+      self.state.withLock { s in
+        if enabled {
+          s.historyEnabled.insert(kind)
+        } else {
+          s.historyEnabled.remove(kind)
+        }
       }
-      if applied, enabled {
+      if enabled {
         self.refreshAll()
       }
     }
@@ -163,7 +172,7 @@ public final class SystemMetricsCoordinator: Sendable {
   public func setAllHistoryDisabled() {
     coordinatorQueue.async { [weak self] in
       self?.state.withLock { s in
-        s.historyEnabled = Array(repeating: false, count: 4)
+        s.historyEnabled = []
       }
     }
   }

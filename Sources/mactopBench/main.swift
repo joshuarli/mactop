@@ -254,8 +254,8 @@ private struct MactopBench {
       onGPU: { _ in deliveries.increment() },
       onNetwork: { _ in deliveries.increment() }
     )
-    for index in 0..<4 {
-      coordinator.setHistoryEnabled(configuration.coordinatorHistory, for: index)
+    for kind in MetricKind.allCases {
+      coordinator.setHistoryEnabled(configuration.coordinatorHistory, for: kind)
     }
 
     runMainLoop(for: configuration.interval * Double(configuration.warmupTicks))

@@ -42,6 +42,7 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
   private var gpuPanel: MetricPopupPanel!
   private var networkPanel: MetricPopupPanel!
   private var statusPanels: [MetricPopupPanel] = []
+  private var statusKinds: [MetricKind] = []
 
   private var latestCPU: CPUUsageDetail?
   private var latestRAM: RAMUsageDetail?
@@ -76,11 +77,11 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
     gpuPanel = MetricPopupPanel(contentView: gpuPopupView)
     networkPanel = MetricPopupPanel(contentView: networkPopupView)
 
-    let entries: [(view: NSView, width: CGFloat, panel: MetricPopupPanel)] = [
-      (networkView, 55, networkPanel),
-      (cpuView, 31, cpuPanel),
-      (ramView, 31, ramPanel),
-      (gpuView, 31, gpuPanel),
+    let entries: [(kind: MetricKind, view: NSView, width: CGFloat, panel: MetricPopupPanel)] = [
+      (.network, networkView, 55, networkPanel),
+      (.cpu, cpuView, 31, cpuPanel),
+      (.ram, ramView, 31, ramPanel),
+      (.gpu, gpuView, 31, gpuPanel),
     ]
     for entry in entries {
       let view = entry.view
@@ -94,6 +95,7 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
       button.sendAction(on: .leftMouseUp)
       statusItems.append(item)
       statusPanels.append(entry.panel)
+      statusKinds.append(entry.kind)
     }
 
     let config = MactopConfig.load()
@@ -172,13 +174,13 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
       guard let self else { return }
       guard !self.isPaused, !self.isSleeping else { return }
       if self.cpuPanel.isVisible {
-        self.refreshProcesses(for: 1)
+        self.refreshProcesses(for: .cpu)
       }
       if self.ramPanel.isVisible {
-        self.refreshProcesses(for: 2)
+        self.refreshProcesses(for: .ram)
       }
       if self.networkPanel.isVisible {
-        self.refreshProcesses(for: 0)
+        self.refreshProcesses(for: .network)
       }
     }
     detailTimer.resume()
@@ -242,11 +244,11 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
     networkPopupView.clearNetworkUsageDisplay()
   }
 
-  private func refreshProcesses(for index: Int) {
+  private func refreshProcesses(for kind: MetricKind) {
     guard !isPaused, !isSleeping else { return }
     let epoch = dataEpoch
-    switch index {
-    case 0:
+    switch kind {
+    case .network:
       guard !networkProcessReadInFlight else { return }
       networkProcessReadInFlight = true
       let reader = networkProcessReader
@@ -262,7 +264,7 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
           }
         }
       }
-    case 1:
+    case .cpu:
       guard !cpuProcessReadInFlight else { return }
       cpuProcessReadInFlight = true
       let reader = cpuProcessReader
@@ -278,7 +280,7 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
           }
         }
       }
-    case 2:
+    case .ram:
       guard !ramProcessReadInFlight else { return }
       ramProcessReadInFlight = true
       let reader = ramProcessReader
@@ -294,7 +296,7 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
           }
         }
       }
-    default:
+    case .gpu:
       break
     }
   }
@@ -302,22 +304,23 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
   @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
     guard let item = statusItems.first(where: { $0.button === sender }) else { return }
     guard let idx = statusItems.firstIndex(where: { $0.button === sender }),
-      statusPanels.indices.contains(idx)
+      statusPanels.indices.contains(idx), statusKinds.indices.contains(idx)
     else { return }
 
     let panels = statusPanels
     let targetPanel = panels[idx]
+    let kind = statusKinds[idx]
 
     for (i, panel) in panels.enumerated() {
       if i != idx {
         panel.orderOut(nil)
-        systemMetricsCoordinator.setHistoryEnabled(false, for: i)
+        systemMetricsCoordinator.setHistoryEnabled(false, for: statusKinds[i])
       }
     }
 
     if targetPanel.isVisible {
       targetPanel.orderOut(nil)
-      systemMetricsCoordinator.setHistoryEnabled(false, for: idx)
+      systemMetricsCoordinator.setHistoryEnabled(false, for: kind)
       return
     }
 
@@ -341,9 +344,9 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     targetPanel.setFrameOrigin(NSPoint(x: x, y: y))
-    systemMetricsCoordinator.setHistoryEnabled(true, for: idx)
-    refreshPopup(at: idx, syncHistory: true)
-    refreshProcesses(for: idx)
+    systemMetricsCoordinator.setHistoryEnabled(true, for: kind)
+    refreshPopup(at: kind, syncHistory: true)
+    refreshProcesses(for: kind)
     targetPanel.makeKeyAndOrderFront(nil)
   }
 
@@ -352,29 +355,27 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
     systemMetricsCoordinator.setAllHistoryDisabled()
   }
 
-  private func refreshPopup(at index: Int, syncHistory: Bool) {
-    switch index {
-    case 0:
+  private func refreshPopup(at kind: MetricKind, syncHistory: Bool) {
+    switch kind {
+    case .network:
       if let latestNetwork {
         networkPopupView.updateNetworkUsage(latestNetwork, syncHistory: syncHistory)
       }
       networkPopupView.updateNetworkProcesses(latestNetworkProcesses)
-    case 1:
+    case .cpu:
       if let latestCPU {
         cpuPopupView.updateCPUUsage(
           latestCPU, processes: latestCPUProcesses, syncHistory: syncHistory)
       }
-    case 2:
+    case .ram:
       if let latestRAM {
         ramPopupView.updateRAMUsage(
           latestRAM, processes: latestRAMProcesses, syncHistory: syncHistory)
       }
-    case 3:
+    case .gpu:
       if let latestGPU {
         gpuPopupView.updateGPUUsage(latestGPU, syncHistory: syncHistory)
       }
-    default:
-      break
     }
   }
 }

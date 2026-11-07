@@ -30,7 +30,7 @@ final class SystemMetricsCoordinatorTests: XCTestCase {
       onGPU: { _ in },
       onNetwork: { _ in }
     )
-    coordinator.setHistoryEnabled(true, for: 1)
+    coordinator.setHistoryEnabled(true, for: .cpu)
 
     XCTAssertTrue(
       waitUntil(timeout: 5) { box.snapshot().contains { !$0.history.isEmpty } },
