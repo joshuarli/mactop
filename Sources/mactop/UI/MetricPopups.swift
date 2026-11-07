@@ -129,11 +129,55 @@ private func addPopupColorValueRow(_ view: NSView, color: NSColor, title: String
 }
 
 
+private final class RankedProcessRowView: NSView {
+  var onHover: ((Bool) -> Void)?
+  var onSelect: (() -> Void)?
+
+  override init(frame: NSRect) {
+    super.init(frame: frame)
+    wantsLayer = true
+    layer?.cornerRadius = 4
+    addTrackingArea(
+      NSTrackingArea(
+        rect: .zero,
+        options: [.activeAlways, .mouseEnteredAndExited, .inVisibleRect],
+        owner: self,
+        userInfo: nil))
+  }
+
+  required init?(coder: NSCoder) { fatalError() }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    let hit = super.hitTest(point)
+    guard let hit, hit !== self, !(hit is NSButton) else { return hit }
+    return self
+  }
+
+  override func mouseEntered(with event: NSEvent) {
+    onHover?(true)
+  }
+
+  override func mouseExited(with event: NSEvent) {
+    onHover?(false)
+  }
+
+  override func mouseDown(with event: NSEvent) {
+    onSelect?()
+  }
+}
+
 private final class RankedProcessListView: NSView {
   private let processCount: Int
+  private var rows: [RankedProcessRowView] = []
   private var pidLabels: [LabelField] = []
   private var nameLabels: [LabelField] = []
   private var valueLabels: [ValueField] = []
+  private var termButtons: [NSButton] = []
+  private var killButtons: [NSButton] = []
+  private var currentProcesses: [RankedProcessMetric] = []
+  private var selectedPID: Int32?
+  private var selectedIndex: Int?
+  private var hoveredIndex: Int?
 
   init(frame: NSRect, count: Int, valueHeader _: String) {
     self.processCount = count
@@ -146,7 +190,13 @@ private final class RankedProcessListView: NSView {
 
     for i in 0..<count {
       let y = CGFloat(count - 1 - i) * rowHeight
-      let row = NSView(frame: NSRect(x: 0, y: y, width: w, height: rowHeight))
+      let row = RankedProcessRowView(frame: NSRect(x: 0, y: y, width: w, height: rowHeight))
+      row.onHover = { [weak self] hovering in
+        self?.setHoveredRow(hovering ? i : nil)
+      }
+      row.onSelect = { [weak self] in
+        self?.selectRow(i)
+      }
 
       let pidLabel = LabelField(
         "", frame: NSRect(x: 2, y: (rowHeight - 16) / 2, width: pidW, height: 16))
@@ -160,20 +210,63 @@ private final class RankedProcessListView: NSView {
       let valueLabel = ValueField(
         "", frame: NSRect(x: nameW, y: (rowHeight - 16) / 2, width: valueW, height: 16))
 
+      let termButton = Self.makeSignalButton(
+        title: "TERM", frame: NSRect(x: nameW, y: (rowHeight - 18) / 2, width: 33, height: 18),
+        tag: i, target: self, action: #selector(terminateButtonClicked(_:)))
+      let killButton = Self.makeSignalButton(
+        title: "KILL",
+        frame: NSRect(x: nameW + 37, y: (rowHeight - 18) / 2, width: 33, height: 18),
+        tag: i, target: self, action: #selector(killButtonClicked(_:)))
+
       row.addSubview(pidLabel)
       row.addSubview(nameLabel)
       row.addSubview(valueLabel)
+      row.addSubview(termButton)
+      row.addSubview(killButton)
       addSubview(row)
 
+      rows.append(row)
       pidLabels.append(pidLabel)
       nameLabels.append(nameLabel)
       valueLabels.append(valueLabel)
+      termButtons.append(termButton)
+      killButtons.append(killButton)
     }
   }
 
   required init?(coder: NSCoder) { fatalError() }
 
+  private static func makeSignalButton(
+    title: String, frame: NSRect, tag: Int, target: AnyObject, action: Selector
+  ) -> NSButton {
+    let button = NSButton(frame: frame)
+    button.title = title
+    button.tag = tag
+    button.target = target
+    button.action = action
+    button.bezelStyle = .smallSquare
+    button.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
+    button.toolTip = title == "TERM" ? "Send SIGTERM" : "Send SIGKILL"
+    button.isHidden = true
+    return button
+  }
+
   func setRankedProcesses(_ procs: [RankedProcessMetric], format: (Double) -> String) {
+    currentProcesses = procs
+    if let selectedPID {
+      selectedIndex = procs.firstIndex { $0.pid == selectedPID }
+      if selectedIndex == nil {
+        self.selectedPID = nil
+      }
+    } else {
+      selectedIndex = nil
+    }
+    if let hoveredIndex,
+      !(currentProcesses.indices.contains(hoveredIndex) && currentProcesses[hoveredIndex].pid > 0)
+    {
+      self.hoveredIndex = nil
+    }
+
     for i in 0..<processCount {
       if i < procs.count {
         let pid = procs[i].pid > 0 ? "\(procs[i].pid)" : ""
@@ -200,10 +293,88 @@ private final class RankedProcessListView: NSView {
         }
       }
     }
+    updateRowExpansion()
+    updateRowHighlights()
   }
 
   func clearRankedProcesses() {
     setRankedProcesses([]) { _ in "" }
+  }
+
+  private func setHoveredRow(_ index: Int?) {
+    if let index,
+      !(currentProcesses.indices.contains(index) && currentProcesses[index].pid > 0)
+    {
+      return
+    }
+    guard hoveredIndex != index else { return }
+    hoveredIndex = index
+    updateRowHighlights()
+  }
+
+  private func selectRow(_ index: Int) {
+    guard currentProcesses.indices.contains(index), currentProcesses[index].pid > 0 else { return }
+    if selectedIndex == index {
+      selectedIndex = nil
+      selectedPID = nil
+    } else {
+      selectedIndex = index
+      selectedPID = currentProcesses[index].pid
+    }
+    updateRowExpansion()
+    updateRowHighlights()
+  }
+
+  private func collapseSelection() {
+    selectedIndex = nil
+    selectedPID = nil
+    updateRowExpansion()
+    updateRowHighlights()
+  }
+
+  private func updateRowExpansion() {
+    for i in 0..<processCount {
+      let expanded =
+        i == selectedIndex && currentProcesses.indices.contains(i) && currentProcesses[i].pid > 0
+      valueLabels[i].isHidden = expanded
+      termButtons[i].isHidden = !expanded
+      killButtons[i].isHidden = !expanded
+      if expanded {
+        let pid = currentProcesses[i].pid
+        termButtons[i].toolTip = "Send SIGTERM to PID \(pid)"
+        killButtons[i].toolTip = "Send SIGKILL to PID \(pid)"
+      }
+    }
+  }
+
+  private func updateRowHighlights() {
+    for i in 0..<processCount {
+      let selected = i == selectedIndex
+      let hovered = i == hoveredIndex
+      rows[i].layer?.backgroundColor =
+        selected || hovered
+        ? NSColor.textColor.withAlphaComponent(selected ? 0.14 : 0.08).cgColor
+        : NSColor.clear.cgColor
+    }
+  }
+
+  @objc private func terminateButtonClicked(_ sender: NSButton) {
+    sendSignal(.terminate, fromRow: sender.tag)
+  }
+
+  @objc private func killButtonClicked(_ sender: NSButton) {
+    sendSignal(.kill, fromRow: sender.tag)
+  }
+
+  private func sendSignal(_ signal: ProcessSignal, fromRow index: Int) {
+    guard currentProcesses.indices.contains(index) else { return }
+    let pid = currentProcesses[index].pid
+    guard pid > 0 else { return }
+    if sendProcessSignal(pid: pid, signal: signal) {
+      collapseSelection()
+    } else {
+      NSSound.beep()
+    }
   }
 }
 

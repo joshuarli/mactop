@@ -1,6 +1,11 @@
 import Darwin
 import Foundation
 
+public enum PlatformProcessSignal: Sendable {
+  case terminate
+  case kill
+}
+
 public struct PlatformProcessUsageSnapshot: Sendable {
   public let userTime: UInt64
   public let systemTime: UInt64
@@ -9,6 +14,12 @@ public struct PlatformProcessUsageSnapshot: Sendable {
 }
 
 public enum ProcessPlatform {
+  public static func sendSignal(pid: Int32, signal: PlatformProcessSignal) -> Bool {
+    guard pid > 0 else { return false }
+    let signalValue: Int32 = signal == .terminate ? SIGTERM : SIGKILL
+    return kill(pid, signalValue) == 0
+  }
+
   public static func canReadRootProcess() -> Bool {
     readUsage(pid: 1) != nil
   }

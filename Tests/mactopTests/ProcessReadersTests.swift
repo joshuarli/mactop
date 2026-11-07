@@ -4,6 +4,15 @@ import XCTest
 @testable import mactopPlatform
 @testable import mactopCore
 
+final class ProcessSignalTests: XCTestCase {
+  func testRejectsNonPositivePID() {
+    XCTAssertFalse(sendProcessSignal(pid: 0, signal: .terminate))
+    XCTAssertFalse(sendProcessSignal(pid: 0, signal: .kill))
+    XCTAssertFalse(sendProcessSignal(pid: -1, signal: .terminate))
+    XCTAssertFalse(sendProcessSignal(pid: -1, signal: .kill))
+  }
+}
+
 final class RankedMetricInsertionTests: XCTestCase {
   private func makeRankedMetric(_ value: Double) -> RankedProcessMetric {
     RankedProcessMetric(name: "\(value)", value: value)

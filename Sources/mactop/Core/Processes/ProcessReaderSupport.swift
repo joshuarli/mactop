@@ -13,6 +13,18 @@ public struct RankedProcessMetric: Sendable {
   }
 }
 
+public enum ProcessSignal: Sendable {
+  case terminate
+  case kill
+}
+
+public func sendProcessSignal(pid: Int32, signal: ProcessSignal) -> Bool {
+  guard pid > 0 else { return false }
+  let platformSignal: PlatformProcessSignal =
+    signal == .terminate ? .terminate : .kill
+  return ProcessPlatform.sendSignal(pid: pid, signal: platformSignal)
+}
+
 let kFScale: Double = 2048.0
 
 func allKinfoPctcpu() -> [Int32: UInt32] {
