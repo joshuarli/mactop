@@ -537,13 +537,11 @@ final class CPUPopupView: NSStackView {
   private let unknownCoreColor = NSColor.controlAccentColor.withAlphaComponent(0.75)
 
   private var circle: MetricPieChartView!
-  private var lineChart: MetricLineChartView!
+  private var stackedChart: MetricStackedChartView!
   private var columnChart: CoreUsageColumnChartView!
 
   private var systemField: ValueField!
   private var userField: ValueField!
-  private var idleField: ValueField!
-  private var uptimeField: ValueField!
 
   private var processesView: RankedProcessListView!
   private let processCount = 8
@@ -601,10 +599,10 @@ final class CPUPopupView: NSStackView {
     lineBox.wantsLayer = true
     lineBox.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
     lineBox.layer?.cornerRadius = 3
-    lineChart = MetricLineChartView(
+    stackedChart = MetricStackedChartView(
       frame: NSRect(x: 1, y: 0, width: popupWidth - 2, height: chartContentH),
       num: initialChartSamples, fixedMax: 1)
-    lineBox.addSubview(lineChart)
+    lineBox.addSubview(stackedChart)
     view.addArrangedSubview(lineBox)
 
     let barBox = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: barContentH))
@@ -624,7 +622,7 @@ final class CPUPopupView: NSStackView {
   }
 
   private func initDetails() -> NSView {
-    let rowCount: CGFloat = 4
+    let rowCount: CGFloat = 2
     let h = (rowHeight * rowCount) + sepHeight
     let view = NSView(frame: NSRect(x: 0, y: 0, width: popupWidth, height: h))
     view.heightAnchor.constraint(equalToConstant: h).isActive = true
@@ -642,11 +640,6 @@ final class CPUPopupView: NSStackView {
     systemField =
       addPopupColorValueRow(container, color: systemColor, title: "System:", value: "").2
     userField = addPopupColorValueRow(container, color: userColor, title: "User:", value: "").2
-    idleField =
-      addPopupColorValueRow(
-        container, color: idleColor.withAlphaComponent(0.5), title: "Idle:", value: ""
-      ).2
-    uptimeField = addPopupValueRow(container, title: "Uptime:", value: "").1
     return view
   }
 
@@ -674,8 +667,6 @@ final class CPUPopupView: NSStackView {
   ) {
     systemField.stringValue = "\(safePercentage(detail.system))%"
     userField.stringValue = "\(safePercentage(detail.user))%"
-    idleField.stringValue = "\(safePercentage(detail.idle))%"
-    uptimeField.stringValue = detail.uptime
 
     circle.setCenterText(nil)
     circle.setSegmentValues([
@@ -685,8 +676,11 @@ final class CPUPopupView: NSStackView {
     circle.setInactiveSegmentColor(idleColor)
     circle.setFraction(detail.total)
 
-    lineChart.resetMetricHistory(sampleCount: max(initialChartSamples, detail.historyCapacity))
-    lineChart.setMetricHistory(detail.history)
+    stackedChart.resetMetricHistory(sampleCount: max(initialChartSamples, detail.historyCapacity))
+    stackedChart.setStackedHistory([
+      StackedChartSeries(detail.systemHistory, color: systemColor),
+      StackedChartSeries(detail.userHistory, color: userColor),
+    ])
 
     if !detail.usagePerCore.isEmpty {
       let vals = detail.usagePerCore.enumerated().map { idx, value in
@@ -713,12 +707,10 @@ final class CPUPopupView: NSStackView {
   func clearCPUUsageDisplay() {
     systemField.stringValue = "--"
     userField.stringValue = "--"
-    idleField.stringValue = "--"
-    uptimeField.stringValue = "--"
     circle.setCenterText("--")
     circle.setSegmentValues([])
     circle.setFraction(0)
-    lineChart.setMetricHistory([])
+    stackedChart.setStackedHistory([])
     columnChart.setCoreUsageValues([])
     processesView.clearRankedProcesses()
   }
@@ -734,7 +726,7 @@ final class RAMPopupView: NSStackView {
 
   private var circle: MetricPieChartView!
   private var level: MetricPieChartView!
-  private var lineChart: MetricLineChartView!
+  private var stackedChart: MetricStackedChartView!
 
   private var usedField: ValueField!
   private var appField: ValueField!
@@ -807,10 +799,10 @@ final class RAMPopupView: NSStackView {
     container.wantsLayer = true
     container.layer?.backgroundColor = NSColor.lightGray.withAlphaComponent(0.1).cgColor
     container.layer?.cornerRadius = 3
-    lineChart = MetricLineChartView(
+    stackedChart = MetricStackedChartView(
       frame: NSRect(x: 1, y: 0, width: popupWidth - 2, height: chartH), num: initialChartSamples,
       fixedMax: 1)
-    container.addSubview(lineChart)
+    container.addSubview(stackedChart)
     view.addSubview(container)
     return view
   }
@@ -891,8 +883,13 @@ final class RAMPopupView: NSStackView {
 
     level.setActiveSegmentIndex(detail.pressureLevel)
 
-    lineChart.resetMetricHistory(sampleCount: max(initialChartSamples, detail.historyCapacity))
-    lineChart.setMetricHistory(detail.history)
+    stackedChart.resetMetricHistory(sampleCount: max(initialChartSamples, detail.historyCapacity))
+    stackedChart.setStackedHistory([
+      StackedChartSeries(detail.appHistory, color: appColor),
+      StackedChartSeries(detail.wiredHistory, color: wiredColor),
+      StackedChartSeries(detail.compressedHistory, color: compressedColor),
+      StackedChartSeries(detail.freeHistory, color: freeColor.withAlphaComponent(0.35)),
+    ])
 
     processesView.setRankedProcesses(processes) { v in formatMemoryBytes(safeUInt64(v)) }
   }
@@ -908,7 +905,7 @@ final class RAMPopupView: NSStackView {
     circle.setSegmentValues([])
     circle.setFraction(0)
     level.setActiveSegmentIndex(0)
-    lineChart.setMetricHistory([])
+    stackedChart.setStackedHistory([])
     processesView.clearRankedProcesses()
   }
 }

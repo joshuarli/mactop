@@ -20,6 +20,8 @@ public struct CPUUsageDetail: Sendable {
   public var loadAvg15: Double
   public var uptime: String
   public var history: [MetricHistoryPoint<Double>]
+  public var systemHistory: [MetricHistoryPoint<Double>]
+  public var userHistory: [MetricHistoryPoint<Double>]
   public var historyCapacity: Int
 }
 
@@ -30,6 +32,8 @@ public final class CPUUsageReader: Sendable {
     var ticks: [Tick] = []
     var perCore: [Double] = []
     var history: ScalarHistory
+    var systemHistory: ScalarHistory
+    var userHistory: ScalarHistory
     var coreKinds: [CPUCoreKind]
     var uptimeFormatter: DateComponentsFormatter
     var cachedUptimeMinute = -1
@@ -56,6 +60,10 @@ public final class CPUUsageReader: Sendable {
     state = Mutex(
       State(
         history: ScalarHistory(capacity: metricGraphSampleCapacity(updateInterval: updateInterval)),
+        systemHistory: ScalarHistory(
+          capacity: metricGraphSampleCapacity(updateInterval: updateInterval)),
+        userHistory: ScalarHistory(
+          capacity: metricGraphSampleCapacity(updateInterval: updateInterval)),
         coreKinds: coreKinds,
         uptimeFormatter: form))
   }
@@ -66,6 +74,8 @@ public final class CPUUsageReader: Sendable {
       s.ticks.removeAll(keepingCapacity: true)
       s.perCore.removeAll(keepingCapacity: true)
       s.history.removeAll()
+      s.systemHistory.removeAll()
+      s.userHistory.removeAll()
     }
   }
 
@@ -81,7 +91,9 @@ fileprivate extension CPUUsageReader.State {
         total: 0, system: 0, user: 0, idle: 1, usagePerCore: [],
         coreKinds: coreKinds,
         loadAvg1: 0, loadAvg5: 0, loadAvg15: 0, uptime: uptimeString(),
-        history: includeHistory ? history.orderedValues : [], historyCapacity: history.capacity)
+        history: includeHistory ? history.orderedValues : [],
+        systemHistory: includeHistory ? systemHistory.orderedValues : [],
+        userHistory: includeHistory ? userHistory.orderedValues : [], historyCapacity: history.capacity)
     }
     ticks.removeAll(keepingCapacity: true)
     ticks.append(
@@ -93,7 +105,9 @@ fileprivate extension CPUUsageReader.State {
         total: 0, system: 0, user: 0, idle: 1, usagePerCore: [],
         coreKinds: coreKinds,
         loadAvg1: 0, loadAvg5: 0, loadAvg15: 0, uptime: uptimeString(),
-        history: includeHistory ? history.orderedValues : [], historyCapacity: history.capacity)
+        history: includeHistory ? history.orderedValues : [],
+        systemHistory: includeHistory ? systemHistory.orderedValues : [],
+        userHistory: includeHistory ? userHistory.orderedValues : [], historyCapacity: history.capacity)
     }
     var totalUsage = 0.0
     var systemUsage = 0.0
@@ -133,14 +147,18 @@ fileprivate extension CPUUsageReader.State {
     swap(&prev, &ticks)
 
     let total = min(1, max(0, totalUsage))
+    let system = min(1, max(0, systemUsage))
+    let user = min(1, max(0, userUsage))
     history.append(total)
+    systemHistory.append(system)
+    userHistory.append(user)
 
     let loadAvg = loadAverage()
 
     return CPUUsageDetail(
       total: total,
-      system: min(1, max(0, systemUsage)),
-      user: min(1, max(0, userUsage)),
+      system: system,
+      user: user,
       idle: min(1, max(0, 1 - totalUsage)),
       usagePerCore: includeHistory ? perCore : [],
       coreKinds: coreKinds,
@@ -149,6 +167,8 @@ fileprivate extension CPUUsageReader.State {
       loadAvg15: loadAvg[2],
       uptime: uptimeString(),
       history: includeHistory ? history.orderedValues : [],
+      systemHistory: includeHistory ? systemHistory.orderedValues : [],
+      userHistory: includeHistory ? userHistory.orderedValues : [],
       historyCapacity: history.capacity
     )
   }

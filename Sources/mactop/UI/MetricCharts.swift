@@ -385,6 +385,192 @@ final class MetricLineChartView: NSView {
 }
 
 
+struct StackedChartSeries {
+  let points: [MetricHistoryPoint<Double>]
+  let color: NSColor
+
+  init(_ points: [MetricHistoryPoint<Double>], color: NSColor) {
+    self.points = points
+    self.color = color
+  }
+}
+
+final class MetricStackedChartView: NSView {
+  private var series: [StackedChartSeries] = []
+  private var pointCapacity: Int
+  private var fixedMax: Double
+  private var cursor: NSPoint? = nil
+
+  init(frame: NSRect = .zero, num: Int, fixedMax: Double = 1) {
+    self.pointCapacity = max(num, 1)
+    self.fixedMax = fixedMax
+    super.init(frame: frame)
+    addTrackingArea(
+      NSTrackingArea(
+        rect: .zero, options: [.activeAlways, .mouseEnteredAndExited, .mouseMoved, .inVisibleRect],
+        owner: self, userInfo: nil))
+  }
+
+  required init?(coder: NSCoder) { fatalError() }
+
+  override func draw(_ dirtyRect: NSRect) {
+    super.draw(dirtyRect)
+    guard let ctx = NSGraphicsContext.current?.cgContext, !series.isEmpty else { return }
+    let count = series.map { $0.points.count }.min() ?? 0
+    guard count > 1 else { return }
+
+    ctx.setShouldAntialias(true)
+    let offset: CGFloat = 1 / (NSScreen.main?.backingScaleFactor ?? 1)
+    let height = frame.height - offset
+    let width = frame.width
+    let dates = Array(series[0].points.prefix(count).map(\.date))
+    let now = Date()
+    let windowStart = now.addingTimeInterval(-metricGraphHistoryWindow)
+    let x = { (date: Date) in
+      CGFloat(
+        max(0, min(metricGraphHistoryWindow, date.timeIntervalSince(windowStart)))
+          / metricGraphHistoryWindow) * width
+    }
+    let expectedInterval = metricGraphHistoryWindow / Double(pointCapacity)
+    let gapThreshold = max(expectedInterval * 2, 2)
+    let y = { (value: Double) in
+      CGFloat(min(max(value, 0), self.fixedMax) / self.fixedMax) * height
+    }
+
+    for index in 1..<count where dates[index].timeIntervalSince(dates[index - 1]) > gapThreshold {
+      let left = max(
+        0, x(dates[index - 1]) + width * CGFloat(expectedInterval / metricGraphHistoryWindow) / 2)
+      let right = min(
+        width, x(dates[index]) - width * CGFloat(expectedInterval / metricGraphHistoryWindow) / 2)
+      if right > left {
+        NSColor.tertiaryLabelColor.withAlphaComponent(0.14).setFill()
+        ctx.fill(CGRect(x: left, y: 0, width: right - left, height: height))
+      }
+    }
+
+    func cumulativeHeight(upTo layer: Int, at index: Int) -> CGFloat {
+      y(series[0...layer].reduce(0.0) { $0 + $1.points[index].value })
+    }
+
+    for layer in series.indices {
+      let color = series[layer].color
+      var start = 0
+      while start < count {
+        var end = start + 1
+        while end < count && dates[end].timeIntervalSince(dates[end - 1]) <= gapThreshold {
+          end += 1
+        }
+        guard end - start > 1 else {
+          start = end
+          continue
+        }
+
+        let path = NSBezierPath()
+        path.move(to: CGPoint(x: x(dates[start]), y: cumulativeHeight(upTo: layer, at: start)))
+        for index in (start + 1)..<end {
+          path.line(to: CGPoint(x: x(dates[index]), y: cumulativeHeight(upTo: layer, at: index)))
+        }
+        for index in stride(from: end - 1, through: start, by: -1) {
+          let bottom = layer == 0 ? 0 : cumulativeHeight(upTo: layer - 1, at: index)
+          path.line(to: CGPoint(x: x(dates[index]), y: bottom))
+        }
+        path.close()
+        color.withAlphaComponent(0.55).setFill()
+        path.fill()
+
+        let line = NSBezierPath()
+        line.move(to: CGPoint(x: x(dates[start]), y: cumulativeHeight(upTo: layer, at: start)))
+        for index in (start + 1)..<end {
+          line.line(to: CGPoint(x: x(dates[index]), y: cumulativeHeight(upTo: layer, at: index)))
+        }
+        color.withAlphaComponent(0.9).setStroke()
+        line.lineWidth = offset
+        line.stroke()
+        start = end
+      }
+    }
+
+    if let p = cursor {
+      let totals = (0..<count).map { index in
+        series.reduce(0.0) { $0 + $1.points[index].value }
+      }
+      let points = (0..<count).map { index in
+        CGPoint(x: x(dates[index]), y: y(totals[index]))
+      }
+      if let nearestIndex = points.indices.min(by: { abs(points[$0].x - p.x) < abs(points[$1].x - p.x) }) {
+        let vLine = NSBezierPath()
+        vLine.setLineDash([4, 4], count: 2, phase: 0)
+        vLine.move(to: CGPoint(x: p.x, y: 0))
+        vLine.line(to: CGPoint(x: p.x, y: height))
+        NSColor.tertiaryLabelColor.set()
+        vLine.lineWidth = offset
+        vLine.stroke()
+
+        let hLine = NSBezierPath()
+        hLine.setLineDash([6, 6], count: 2, phase: 0)
+        hLine.move(to: CGPoint(x: 0, y: p.y))
+        hLine.line(to: CGPoint(x: frame.width, y: p.y))
+        hLine.lineWidth = offset
+        hLine.stroke()
+
+        let pct = "\(Int((totals[nearestIndex] * 100).rounded()))%"
+        let attrs: [NSAttributedString.Key: Any] = [
+          .font: NSFont.systemFont(ofSize: 12, weight: .regular),
+          .foregroundColor: isDarkMode ? NSColor.white : NSColor.textColor,
+        ]
+        let tw = pct.widthOfString(usingFont: NSFont.systemFont(ofSize: 12))
+        let tx =
+          points[nearestIndex].x + 4 + tw > frame.width
+          ? points[nearestIndex].x - tw - 4 : points[nearestIndex].x + 4
+        let box = NSBezierPath(
+          roundedRect: NSRect(x: tx - 3, y: points[nearestIndex].y - 2, width: tw + 6, height: 14),
+          xRadius: 2, yRadius: 2)
+        NSColor.gray.setStroke()
+        box.stroke()
+        (isDarkMode ? NSColor.black : NSColor.white).withAlphaComponent(0.8).setFill()
+        box.fill()
+        NSAttributedString(string: pct, attributes: attrs).draw(
+          with: CGRect(x: tx, y: points[nearestIndex].y + 1, width: tw, height: 12))
+      }
+    }
+  }
+
+  override func mouseEntered(with event: NSEvent) {
+    cursor = convert(event.locationInWindow, from: nil)
+    needsDisplay = true
+  }
+
+  override func mouseMoved(with event: NSEvent) {
+    cursor = convert(event.locationInWindow, from: nil)
+    needsDisplay = true
+  }
+
+  override func mouseExited(with event: NSEvent) {
+    cursor = nil
+    needsDisplay = true
+  }
+
+  func setStackedHistory(_ values: [StackedChartSeries]) {
+    series = values.map {
+      StackedChartSeries(Array($0.points.suffix(pointCapacity)), color: $0.color)
+    }
+    if window?.isVisible ?? false {
+      display()
+    } else {
+      needsDisplay = true
+    }
+  }
+
+  func resetMetricHistory(sampleCount: Int = 60) {
+    pointCapacity = max(sampleCount, 1)
+    series = series.map {
+      StackedChartSeries(Array($0.points.suffix(pointCapacity)), color: $0.color)
+    }
+    needsDisplay = true
+  }
+}
+
+
 final class CoreUsageColumnChartView: NSView {
   private var values: [ChartSegmentValue] = []
   private var cursor: CGPoint? = nil
