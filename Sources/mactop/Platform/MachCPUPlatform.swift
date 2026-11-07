@@ -65,6 +65,14 @@ public enum MachCPUPlatform {
     }
   }
 
+  static func coreKind(forClusterType type: String?) -> PlatformCPUCoreKind {
+    switch type?.trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters)) {
+    case "E", "M": return .efficiency
+    case "P": return .performance
+    default: return .unknown
+    }
+  }
+
   private static func readCoreKinds(count: Int) -> [PlatformCPUCoreKind] {
     var iterator: io_iterator_t = 0
     guard
@@ -99,8 +107,7 @@ public enum MachCPUPlatform {
         let type = (values["cluster-type"] as? Data).flatMap { String(data: $0, encoding: .utf8) }?
           .trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters))
         if result.indices.contains(id) {
-          result[id] =
-            type == "E" ? .efficiency : (type == "P" || type == "M" ? .performance : .unknown)
+          result[id] = coreKind(forClusterType: type)
         }
       }
     }
