@@ -13,7 +13,6 @@ The reader and platform files own each subsystem:
 | CPU | [CPUUsageReader.swift](../Sources/mactop/Core/CPU/CPUUsageReader.swift) | [MachCPUPlatform.swift](../Sources/mactop/Platform/MachCPUPlatform.swift) |
 | RAM | [RAMUsageReader.swift](../Sources/mactop/Core/RAM/RAMUsageReader.swift) | [MachRAMPlatform.swift](../Sources/mactop/Platform/MachRAMPlatform.swift) |
 | GPU | [GPUUsageReader.swift](../Sources/mactop/Core/GPU/GPUUsageReader.swift) | [IOAcceleratorPlatform.swift](../Sources/mactop/Platform/IOAcceleratorPlatform.swift) |
-| Power | [PowerTelemetryReader.swift](../Sources/mactop/Core/Power/PowerTelemetryReader.swift) | [PowerTelemetryPlatform.swift](../Sources/mactop/Platform/PowerTelemetryPlatform.swift) |
 | Network | [NetworkInterfaceReader.swift](../Sources/mactop/Core/Network/NetworkInterfaceReader.swift) | [NetworkInterfacePlatform.swift](../Sources/mactop/Platform/NetworkInterfacePlatform.swift) |
 
 Process rankings have [their own readers and shared support](processes.md).
@@ -22,19 +21,19 @@ Process rankings have [their own readers and shared support](processes.md).
 
 ## Runtime and ownership
 
-`MactopAppDelegate` registers network, CPU, RAM, GPU, and PWR status items from one list of view/panel entries.
+`MactopAppDelegate` registers network, CPU, RAM, and GPU status items from one list of view/panel entries.
 Network is registered first to reduce the chance macOS hides it when menu-bar space is tight.
 
 [SystemMetricsCoordinator.swift](../Sources/mactop/Core/SystemMetricsCoordinator.swift) uses one interval timer on a serial coordinator queue.
 Each reader runs on its own utility queue, with an in-flight flag preventing overlapping reads.
 Results return through the coordinator queue and then the main queue.
 Readers and the coordinator guard mutable state with a `Synchronization.Mutex` on top of queue confinement, so the types are strictly `Sendable`.
-The private-framework bindings stay outside that rule: [NetworkStatisticsPlatform.swift](../Sources/mactop/Platform/NetworkStatisticsPlatform.swift) and [PowerTelemetryPlatform.swift](../Sources/mactop/Platform/PowerTelemetryPlatform.swift) hold `dlopen` handles, retained C blocks, and CF containers that Swift 6 cannot prove safe, and [PowerTelemetryReader.swift](../Sources/mactop/Core/Power/PowerTelemetryReader.swift) owns the modeled-power reader. Those three files are exempt from the unchecked-concurrency rule; everything else must stay strictly `Sendable`.
+The private-framework bindings stay outside that rule: [NetworkStatisticsPlatform.swift](../Sources/mactop/Platform/NetworkStatisticsPlatform.swift) holds `dlopen` handles, retained C blocks, and CF containers that Swift 6 cannot prove safe. That file is exempt from the unchecked-concurrency rule; everything else must stay strictly `Sendable`.
 History snapshots are delivered for visible popups. Readers continue collecting history while popups are hidden.
 
 Process lists refresh on opening a matching popup and every three seconds while visible.
 CPU also gets one startup read. NetworkStatistics initialization is lazy.
-Pausing clears aggregate history and displayed values. Sleep stops scheduled reads. Wake resets power sampling while preserving chart history.
+Pausing clears aggregate history and displayed values. Sleep stops scheduled reads. Wake preserves chart history.
 
 ## History
 

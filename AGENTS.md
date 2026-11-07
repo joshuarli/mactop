@@ -6,8 +6,7 @@ Build with `make build`, run with `make dev`, and test with `swift test` (Swift 
 
 - Keep Core AppKit-free and return typed metric data. UI owns views and presentation.
 - Keep process rankings per PID rather than combining children under a parent.
-- Load private IOReport and NetworkStatistics dynamically so missing symbols can disable their features.
-- Keep System power separate from modeled component power, including separate Display and Media bands.
+- Load private NetworkStatistics dynamically so missing symbols can disable its feature.
 
 Use these topic docs:
 
@@ -15,7 +14,6 @@ Use these topic docs:
 - [Target boundaries, source map, runtime, and history](docs/architecture.md)
 - [CPU, RAM, GPU, and network data sources](docs/metrics.md)
 - [Process ranking and access limits](docs/processes.md)
-- [Power sources, reconciliation, and private IOReport](docs/power.md)
 - [Benchmark procedure and output](docs/profiling.md)
 - [Historical performance measurements](docs/performance-history.md)
 - [Open findings](TODO.md)

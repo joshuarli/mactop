@@ -8,12 +8,12 @@ Run commands from the repository root.
 ```sh
 make build
 make dev
-swift test --filter PowerReadingValidationTests
+swift test
 ```
 
 `make build` builds debug products and signs the debug mactop executable ad hoc. `make dev` also launches it.
 For another focused test, select its XCTest class from [ProcessReadersTests.swift](../Tests/mactopTests/ProcessReadersTests.swift).
-Those tests cover ranking, CPU deltas, power validation, ps parsing, and network counter rates.
+Those tests cover ranking, CPU deltas, ps parsing, and network counter rates.
 They do not exercise live readers, private callbacks, the coordinator, or AppKit views.
 
 `make lint` checks architectural rules with Bylaws (expected on PATH): layer direction, UI-free Core and Platform, final classes, checked concurrency, no task sleep, no print. The Makefile has no format target.

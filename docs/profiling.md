@@ -6,7 +6,7 @@ Run the headless release benchmark from the repository root:
 make bench
 ```
 
-[main.swift](../Sources/mactopBench/main.swift) launches nine concurrent child processes: CPU, RAM, GPU, power, network interface, three process readers, and the coordinator.
+[main.swift](../Sources/mactopBench/main.swift) launches eight concurrent child processes: CPU, RAM, GPU, network interface, three process readers, and the coordinator.
 It links the core and platform targets and never starts AppKit or constructs status items, popups, or icons.
 The coordinator scenario drives `SystemMetricsCoordinator` utility queues and main-actor callbacks through a Foundation run loop.
 Profile mactopBench with Instruments for reader attribution. Profile the app separately for popup and icon work.
@@ -43,11 +43,11 @@ The columns have these meanings:
 Memory snapshots use `malloc_zone_statistics` and Mach `TASK_VM_INFO`.
 They measure live state, not total malloc calls. Reader snapshots taken after reads can also miss transient peaks within a read.
 Thread CPU omits work on NetworkStatistics callback queues. Compare CPU only within the same scenario and configuration.
-`total_wall` spans parent launch of all nine children through their completion, including warm-up and startup but excluding the build.
+`total_wall` spans parent launch of all eight children through their completion, including warm-up and startup but excluding the build.
 
-Power and GPU report summed wall-clock phase durations and counts. Phase time is not CPU time.
+GPU reports summed wall-clock phase durations and counts. Phase time is not CPU time.
 GPU currently records `ioaccelerator.properties` and history append, not separate service-lookup or history-snapshot phases.
-Instrumentation adds overhead. IOReport phase timing runs only when a core phase recorder is attached, which `make bench` does and the app does not.
+Instrumentation adds overhead.
 
 ## Compare changes
 

@@ -8,8 +8,6 @@ let checkedTypes = Codebase(
   including: ["Sources/mactop/**"],
   excluding: [
     "Sources/mactop/Platform/NetworkStatisticsPlatform.swift",
-    "Sources/mactop/Platform/PowerTelemetryPlatform.swift",
-    "Sources/mactop/Core/Power/PowerTelemetryReader.swift",
   ]
 )
 

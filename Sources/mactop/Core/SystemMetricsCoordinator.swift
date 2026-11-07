@@ -5,24 +5,20 @@ public final class SystemMetricsCoordinator: Sendable {
   private let cpuReader: CPUUsageReader
   private let ramReader: RAMUsageReader
   private let gpuReader: GPUUsageReader
-  private let powerReader: PowerTelemetryReader
   private let networkReader: NetworkInterfaceReader
   private let coordinatorQueue = DispatchQueue(
     label: "mactop.system-metrics-coordinator", qos: .utility)
   private let cpuQueue = DispatchQueue(label: "mactop.cpu-metrics-reader", qos: .utility)
   private let ramQueue = DispatchQueue(label: "mactop.ram-metrics-reader", qos: .utility)
   private let gpuQueue = DispatchQueue(label: "mactop.gpu-metrics-reader", qos: .utility)
-  private let powerQueue = DispatchQueue(label: "mactop.power-metrics-reader", qos: .utility)
   private let networkQueue = DispatchQueue(label: "mactop.network-metrics-reader", qos: .utility)
-  private let onPower: @MainActor @Sendable (PowerUsageDetail) -> Void
   private let timers: [DispatchSourceTimer]
   private struct State: Sendable {
     var cpuReadInFlight = false
     var ramReadInFlight = false
     var gpuReadInFlight = false
-    var powerReadInFlight = false
     var networkReadInFlight = false
-    var historyEnabled = Array(repeating: false, count: 5)
+    var historyEnabled = Array(repeating: false, count: 4)
     var isPaused = false
     var isSleeping = false
     var dataEpoch = 0
@@ -34,7 +30,6 @@ public final class SystemMetricsCoordinator: Sendable {
     onCPU: @escaping @MainActor @Sendable (CPUUsageDetail) -> Void,
     onRAM: @escaping @MainActor @Sendable (RAMUsageDetail) -> Void,
     onGPU: @escaping @MainActor @Sendable (GPUUsageDetail) -> Void,
-    onPower: @escaping @MainActor @Sendable (PowerUsageDetail) -> Void,
     onNetwork: @escaping @MainActor @Sendable (NetworkUsageDetail) -> Void
   ) {
 
@@ -42,9 +37,7 @@ public final class SystemMetricsCoordinator: Sendable {
     cpuReader = CPUUsageReader(updateInterval: interval)
     ramReader = RAMUsageReader(updateInterval: interval)
     gpuReader = GPUUsageReader(updateInterval: interval)
-    powerReader = PowerTelemetryReader(updateInterval: interval)
     networkReader = NetworkInterfaceReader(updateInterval: interval)
-    self.onPower = onPower
 
     let timer = DispatchSource.makeTimerSource(queue: coordinatorQueue)
     timers = [timer]
@@ -67,7 +60,6 @@ public final class SystemMetricsCoordinator: Sendable {
       var cpu = false
       var ram = false
       var gpu = false
-      var power = false
       var network = false
       var includeHistory: [Bool] = []
       var epoch = 0
@@ -78,7 +70,6 @@ public final class SystemMetricsCoordinator: Sendable {
       if !s.cpuReadInFlight { s.cpuReadInFlight = true; kick.cpu = true }
       if !s.ramReadInFlight { s.ramReadInFlight = true; kick.ram = true }
       if !s.gpuReadInFlight { s.gpuReadInFlight = true; kick.gpu = true }
-      if !s.powerReadInFlight { s.powerReadInFlight = true; kick.power = true }
       if !s.networkReadInFlight { s.networkReadInFlight = true; kick.network = true }
       return kick
     }
@@ -88,7 +79,6 @@ public final class SystemMetricsCoordinator: Sendable {
     let includeCPUHistory = kick.includeHistory[1]
     let includeRAMHistory = kick.includeHistory[2]
     let includeGPUHistory = kick.includeHistory[3]
-    let includePowerHistory = kick.includeHistory[4]
     let epoch = kick.epoch
 
     if kick.cpu {
@@ -136,21 +126,6 @@ public final class SystemMetricsCoordinator: Sendable {
       }
     }
 
-    if kick.power {
-      powerQueue.async { [weak self] in
-        guard let self else { return }
-        let power = self.powerReader.readPowerUsageDetail(includeHistory: includePowerHistory)
-        self.coordinatorQueue.async {
-          let proceed = self.state.withLock { s -> Bool in
-            s.powerReadInFlight = false
-            return !s.isPaused && s.dataEpoch == epoch
-          }
-          guard proceed else { return }
-          DispatchQueue.main.async { self.onPower(power) }
-        }
-      }
-    }
-
     if kick.network {
       networkQueue.async { [weak self] in
         guard let self else { return }
@@ -180,7 +155,7 @@ public final class SystemMetricsCoordinator: Sendable {
   public func setAllHistoryDisabled() {
     coordinatorQueue.async { [weak self] in
       self?.state.withLock { s in
-        s.historyEnabled = Array(repeating: false, count: 5)
+        s.historyEnabled = Array(repeating: false, count: 4)
       }
     }
   }
@@ -192,7 +167,7 @@ public final class SystemMetricsCoordinator: Sendable {
         s.isPaused = paused
         s.dataEpoch += 1
         if paused {
-          s.historyEnabled = Array(repeating: false, count: 5)
+          s.historyEnabled = Array(repeating: false, count: 4)
         }
       }
       if paused {
@@ -205,15 +180,7 @@ public final class SystemMetricsCoordinator: Sendable {
     cpuQueue.async { [weak self] in self?.cpuReader.clearCPUUsageHistory() }
     ramQueue.async { [weak self] in self?.ramReader.clearRAMUsageHistory() }
     gpuQueue.async { [weak self] in self?.gpuReader.clearGPUUsageHistory() }
-    powerQueue.async { [weak self] in self?.powerReader.clearPowerUsageHistory() }
     networkQueue.async { [weak self] in self?.networkReader.clearNetworkUsageHistory() }
-  }
-
-  public func powerSourceChanged() {
-    powerQueue.async { [weak self] in
-      guard let self else { return }
-      self.powerReader.invalidateChargingCache()
-    }
   }
 
   public func systemWillSleep() {
@@ -224,11 +191,7 @@ public final class SystemMetricsCoordinator: Sendable {
 
   public func systemDidWake() {
     coordinatorQueue.async { [weak self] in
-      guard let self else { return }
-      self.state.withLock { $0.isSleeping = false }
-      self.powerQueue.async { [weak self] in
-        self?.powerReader.resetAfterWake()
-      }
+      self?.state.withLock { $0.isSleeping = false }
     }
   }
 

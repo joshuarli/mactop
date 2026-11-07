@@ -96,7 +96,7 @@ private struct BenchResult: Codable {
 @main
 private struct MactopBench {
   private static let subsystemNames = [
-    "cpu", "ram", "gpu", "power", "net", "cpu-process", "ram-process", "net-process",
+    "cpu", "ram", "gpu", "net", "cpu-process", "ram-process", "net-process",
     "coordinator",
   ]
 
@@ -165,7 +165,7 @@ private struct MactopBench {
     }
     print("")
     print("phase                         count  wall_ms  wall_ms/tick")
-    for subsystem in ["power", "gpu"] {
+    for subsystem in ["gpu"] {
       guard let result = results.first(where: { $0.name == subsystem }) else { continue }
       print("\(subsystem):")
       for phase in result.phases {
@@ -217,15 +217,6 @@ private struct MactopBench {
         sample: {
           _ = reader.readGPUUsageDetail(includeHistory: true)
         }, phaseRecorder: phaseRecorder)
-    case "power":
-      let phaseRecorder = CoreReadPhaseRecorder()
-      let reader = PowerTelemetryReader(
-        updateInterval: configuration.interval, phaseRecorder: phaseRecorder)
-      return measure(
-        name: name, configuration: configuration,
-        sample: {
-          _ = reader.readPowerUsageDetail(includeHistory: true)
-        }, phaseRecorder: phaseRecorder)
     case "net":
       let reader = NetworkInterfaceReader(updateInterval: configuration.interval)
       return measure(name: name, configuration: configuration) {
@@ -261,10 +252,9 @@ private struct MactopBench {
       onCPU: { _ in deliveries.increment() },
       onRAM: { _ in deliveries.increment() },
       onGPU: { _ in deliveries.increment() },
-      onPower: { _ in deliveries.increment() },
       onNetwork: { _ in deliveries.increment() }
     )
-    for index in 0..<5 {
+    for index in 0..<4 {
       coordinator.setHistoryEnabled(configuration.coordinatorHistory, for: index)
     }
 

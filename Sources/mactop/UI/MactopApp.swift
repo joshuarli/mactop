@@ -1,5 +1,4 @@
 import AppKit
-import IOKit.ps
 import mactopCore
 
 @main
@@ -22,11 +21,9 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
   private var cpuView: PercentageStatusItemView!
   private var ramView: PercentageStatusItemView!
   private var gpuView: PercentageStatusItemView!
-  private var powerView: PowerStatusItemView!
   private var networkView: NetworkSpeedStatusItemView!
   private var systemMetricsCoordinator: SystemMetricsCoordinator!
   private var popupRefreshTimer: DispatchSourceTimer?
-  private var powerSourceRunLoopSource: CFRunLoopSource?
   private let cpuProcessQueue = DispatchQueue(label: "mactop.cpu-process-reader", qos: .utility)
   private let ramProcessQueue = DispatchQueue(label: "mactop.ram-process-reader", qos: .utility)
   private let networkProcessQueue = DispatchQueue(
@@ -38,20 +35,17 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
   private var cpuPopupView: CPUPopupView!
   private var ramPopupView: RAMPopupView!
   private var gpuPopupView: GPUPopupView!
-  private var powerPopupView: PowerPopupView!
   private var networkPopupView: NetworkPopupView!
 
   private var cpuPanel: MetricPopupPanel!
   private var ramPanel: MetricPopupPanel!
   private var gpuPanel: MetricPopupPanel!
-  private var powerPanel: MetricPopupPanel!
   private var networkPanel: MetricPopupPanel!
   private var statusPanels: [MetricPopupPanel] = []
 
   private var latestCPU: CPUUsageDetail?
   private var latestRAM: RAMUsageDetail?
   private var latestGPU: GPUUsageDetail?
-  private var latestPower: PowerUsageDetail?
   private var latestNetwork: NetworkUsageDetail?
   private var latestCPUProcesses: [RankedProcessMetric] = []
   private var latestRAMProcesses: [RankedProcessMetric] = []
@@ -69,19 +63,16 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
     cpuView = PercentageStatusItemView(label: "CPU")
     ramView = PercentageStatusItemView(label: "RAM")
     gpuView = PercentageStatusItemView(label: "GPU")
-    powerView = PowerStatusItemView()
     networkView = NetworkSpeedStatusItemView()
 
     cpuPopupView = CPUPopupView()
     ramPopupView = RAMPopupView()
     gpuPopupView = GPUPopupView()
-    powerPopupView = PowerPopupView()
     networkPopupView = NetworkPopupView()
 
     cpuPanel = MetricPopupPanel(contentView: cpuPopupView)
     ramPanel = MetricPopupPanel(contentView: ramPopupView)
     gpuPanel = MetricPopupPanel(contentView: gpuPopupView)
-    powerPanel = MetricPopupPanel(contentView: powerPopupView)
     networkPanel = MetricPopupPanel(contentView: networkPopupView)
 
     let entries: [(view: NSView, width: CGFloat, panel: MetricPopupPanel)] = [
@@ -89,7 +80,6 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
       (cpuView, 31, cpuPanel),
       (ramView, 31, ramPanel),
       (gpuView, 31, gpuPanel),
-      (powerView, 40, powerPanel),
     ]
     for entry in entries {
       let view = entry.view
@@ -135,15 +125,6 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
           self.gpuPopupView.updateGPUUsage(gpu)
         }
       },
-      onPower: { [weak self] power in
-        guard let self else { return }
-        guard !self.isPaused else { return }
-        self.latestPower = power
-        self.powerView.watts = power.total
-        if self.powerPanel.isVisible {
-          self.powerPopupView.updatePowerUsage(power)
-        }
-      },
       onNetwork: { [weak self] network in
         guard let self else { return }
         guard !self.isPaused else { return }
@@ -155,7 +136,6 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
         }
       }
     )
-    installPowerSourceObserver()
     NSWorkspace.shared.notificationCenter.addObserver(
       self,
       selector: #selector(systemDidWake),
@@ -208,11 +188,7 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
     NotificationCenter.default.removeObserver(self)
     NSWorkspace.shared.notificationCenter.removeObserver(self)
     popupRefreshTimer?.cancel()
-    if let powerSourceRunLoopSource {
-      CFRunLoopRemoveSource(CFRunLoopGetMain(), powerSourceRunLoopSource, .defaultMode)
-    }
     popupRefreshTimer = nil
-    powerSourceRunLoopSource = nil
   }
 
   @objc private func systemDidWake(_ notification: Notification) {
@@ -247,7 +223,6 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
     latestCPU = nil
     latestRAM = nil
     latestGPU = nil
-    latestPower = nil
     latestNetwork = nil
     latestCPUProcesses = []
     latestRAMProcesses = []
@@ -256,29 +231,12 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
     cpuView.showPercentagePlaceholder()
     ramView.showPercentagePlaceholder()
     gpuView.showPercentagePlaceholder()
-    powerView.showPowerPlaceholder()
     networkView.showNetworkSpeedPlaceholder()
 
     cpuPopupView.clearCPUUsageDisplay()
     ramPopupView.clearRAMUsageDisplay()
     gpuPopupView.clearGPUUsageDisplay()
-    powerPopupView.clearPowerUsageDisplay()
     networkPopupView.clearNetworkUsageDisplay()
-  }
-
-  private func installPowerSourceObserver() {
-    let context = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
-    guard
-      let source = IOPSNotificationCreateRunLoopSource(
-        { context in
-          guard let context else { return }
-          let delegate = Unmanaged<MactopAppDelegate>.fromOpaque(context).takeUnretainedValue()
-          delegate.systemMetricsCoordinator.powerSourceChanged()
-        }, context)?.takeRetainedValue()
-    else { return }
-
-    CFRunLoopAddSource(CFRunLoopGetMain(), source, .defaultMode)
-    powerSourceRunLoopSource = source
   }
 
   private func refreshProcesses(for index: Int) {
@@ -411,10 +369,6 @@ final class MactopAppDelegate: NSObject, NSApplicationDelegate {
     case 3:
       if let latestGPU {
         gpuPopupView.updateGPUUsage(latestGPU, syncHistory: syncHistory)
-      }
-    case 4:
-      if let latestPower {
-        powerPopupView.updatePowerUsage(latestPower, syncHistory: syncHistory)
       }
     default:
       break

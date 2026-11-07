@@ -112,21 +112,6 @@ final class CPUProcessUsageDeltaTests: XCTestCase {
   }
 }
 
-final class PowerReadingValidationTests: XCTestCase {
-  func testAcceptsNormalPower() {
-    XCTAssertEqual(validatedPowerReadingWatts(42), 42)
-  }
-
-  func testRejectsWakeSpike() {
-    XCTAssertNil(validatedPowerReadingWatts(100_000))
-  }
-
-  func testRejectsNonFinitePower() {
-    XCTAssertNil(validatedPowerReadingWatts(.infinity))
-    XCTAssertNil(validatedPowerReadingWatts(.nan))
-  }
-}
-
 final class PSProcessOutputParsingTests: XCTestCase {
   private let sample = """
       PID  %CPU COMM
