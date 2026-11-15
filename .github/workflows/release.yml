@@ -108,10 +108,11 @@ jobs:
 
       - name: Package release artifacts
         run: |
-          mkdir dist/zips
-          zip -9 --junk-paths dist/zips/mactop-aarch64-apple-darwin.zip dist/mactop-aarch64-apple-darwin
-          cd dist/zips
-          sha256sum *.zip | LC_ALL=C sort -k2 > SHA256SUMS
+          mkdir dist/archives
+          chmod 755 dist/mactop-aarch64-apple-darwin
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cJf dist/archives/mactop-aarch64-apple-darwin.tar.xz -C dist mactop-aarch64-apple-darwin
+          cd dist/archives
+          sha256sum *.tar.xz | LC_ALL=C sort -k2 > SHA256SUMS
           sha256sum -c SHA256SUMS
 
       - name: Create release tag at triggering SHA
@@ -155,4 +156,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: release-${{ github.sha }}
-        run: gh release create "$RELEASE_TAG" dist/zips/*.zip dist/zips/SHA256SUMS --repo "$GITHUB_REPOSITORY" --prerelease --notes-file "$RUNNER_TEMP/release-notes.md" --verify-tag --title "$RELEASE_TAG"
+        run: gh release create "$RELEASE_TAG" dist/archives/*.tar.xz dist/archives/SHA256SUMS --repo "$GITHUB_REPOSITORY" --prerelease --notes-file "$RUNNER_TEMP/release-notes.md" --verify-tag --title "$RELEASE_TAG"
