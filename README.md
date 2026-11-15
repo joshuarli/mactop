@@ -6,7 +6,7 @@ mactop shows CPU, RAM, GPU, and network activity in the macOS menu bar, with cha
 
 The package requires macOS 27 or later. Binary releases target Apple Silicon.
 
-Download `mactop-aarch64-apple-darwin.zip` from [Releases](https://github.com/joshuarli/mactop/releases), unzip it, and install the executable:
+Download `mactop-aarch64-apple-darwin.tar.xz` from [Releases](https://github.com/joshuarli/mactop/releases), extract it, and install the executable:
 
 ```sh
 mkdir -p ~/.local/bin

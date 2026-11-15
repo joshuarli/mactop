@@ -40,6 +40,6 @@ make clean
 ## Release
 
 The [release workflow](../.github/workflows/release.yml) runs manually through `workflow_dispatch`.
-It builds the release mactop product on the `xcode-27` runner and publishes a ZIP as a GitHub pre-release tagged `release-<commit>`.
+It builds the release mactop product on the `xcode-27` runner and publishes a tar.xz archive as a GitHub pre-release tagged `release-<commit>`.
 The workflow packages a bare executable, not the app bundle or LaunchAgent created by `make install`.
 It runs `swift test` before publishing the artifact. It does not lint, sign the binary, or notarize it.
