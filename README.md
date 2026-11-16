@@ -14,7 +14,7 @@ install -m 755 ~/Downloads/mactop-aarch64-apple-darwin ~/.local/bin/mactop
 ~/.local/bin/mactop
 ```
 
-The app runs in the menu bar without a Dock icon. Click a metric to open its popup. Click outside the popup to close it.
+Run `mactop --help` for the command reference. With no arguments, the app runs in the menu bar without a Dock icon. Click a metric to open its popup. Click outside the popup to close it.
 Use the popup's pause button to stop collection and clear displayed data. Use its quit button to exit.
 
 CPU, RAM, and GPU show percentages. Network shows upload above download in bytes per second.
