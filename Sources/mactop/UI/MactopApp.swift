@@ -6,6 +6,10 @@ struct MactopApp {
   private static var delegate: MactopAppDelegate?
 
   static func main() {
+    if CommandHelp.requested(Array(CommandLine.arguments.dropFirst())) {
+      FileHandle.standardOutput.write(Data(CommandHelp.text.utf8))
+      return
+    }
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
     let delegate = MactopAppDelegate()
