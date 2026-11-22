@@ -8,7 +8,7 @@ Run commands from the repository root.
 ```sh
 make build
 make dev
-swift test
+make test
 ```
 
 `make build` builds debug products and signs the debug mactop executable ad hoc. `make dev` also launches it.

@@ -13,10 +13,13 @@ BENCH_INTERVAL     ?= 1
 BENCH_WARMUP_TICKS ?= 2
 BENCH_PROCESS_COUNT ?= 8
 BENCH_COORDINATOR_HISTORY ?= 0
-.PHONY: build bench app install uninstall clean lint
+.PHONY: build test bench app install uninstall clean lint
 
 lint:
 	bylaws lint
+
+test:
+	swift test
 
 dev: build
 	.build/debug/mactop
