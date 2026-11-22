@@ -99,6 +99,5 @@ uninstall:
 	rm -rf $(APP_PATH)
 
 clean:
-	swift package clean
-	rm -f $(ICON_PNG) $(ICON_ICNS)
-	rm -rf $(APP_BUILD) .build/icon.iconset
+	@if test -L ./.build || { test -e ./.build && ! test -d ./.build; }; then printf '%s\n' 'make clean: ./.build must be a local build directory' >&2; exit 1; fi
+	rm -rf -- ./.build
