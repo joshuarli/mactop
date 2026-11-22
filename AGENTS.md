@@ -1,5 +1,7 @@
 # mactop
 
+`make clean` removes the checkout’s Swift and app build output in `.build`.
+
 mactop is a macOS menu-bar utility for recent system metrics with low runtime overhead.
 
 Build with `make build`, run with `make dev`, and test with `make test` (Swift 6.4, macOS 27+). Lint with `make lint` (Bylaws architectural rules; lint only).
