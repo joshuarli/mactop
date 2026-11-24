@@ -19,3 +19,5 @@ Use these topic docs:
 - [Benchmark procedure and output](docs/profiling.md)
 - [Historical performance measurements](docs/performance-history.md)
 - [Open findings](TODO.md)
+
+The roadmap, [docs/roadmap.md](docs/roadmap.md), holds all current and future work; its Status is the resume point.
